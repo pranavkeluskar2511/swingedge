@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: swingedge
+    runtime: node
+    buildCommand: "echo 'No build step needed'"
+    startCommand: "node server.js"
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /health
