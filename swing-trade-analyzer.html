@@ -570,13 +570,10 @@ async function detectProxy() {
       const j = await r.json();
       if (j.ok) {
         USE_LOCAL_PROXY = true;
-        const mode = j.cloud ? '☁ Railway cloud' : '⚙ local server';
-        dbg(`✓ Proxy active (${mode}) — all API calls routed via server.js`, 'ok');
-        // Update header indicator
+        const platform = j.platform === 'render' ? '☁ Render' : j.cloud ? '☁ Cloud' : '⚙ Local server';
+        dbg(`✓ Proxy active (${platform}) — all API calls routed via server.js`, 'ok');
         const el = document.getElementById('lastUpdated');
-        if (el && j.cloud) el.textContent = '☁ Running on Railway — ready';
-        else if (el) el.textContent = '⚙ Local server active — ready';
-        // Hide the file:// banner if showing (not needed when proxied)
+        if (el) el.textContent = `${platform} — ready`;
         document.getElementById('fileBanner').style.display = 'none';
         return;
       }
