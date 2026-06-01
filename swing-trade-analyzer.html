@@ -906,62 +906,62 @@ function preAnalyse(s, holdPeriod, minRR) {
 
   // ── Layer 2: Technical confirmation (0–100) ─────────────────────────────
   let l2 = 50;
-  // RSI
+  // RSI — overbought is a hard negative for swing entries
   const rsi = s.rsi14;
   if (rsi != null) {
-    if (rsi >= hp.rsiIdealLo && rsi <= hp.rsiIdealHi) l2 += 20; // ideal zone
-    else if (rsi > hp.rsiIdealHi && rsi <= 75)        l2 += 5;  // mildly stretched
-    else if (rsi > 75)                                 l2 -= 20; // overbought
-    else if (rsi < 30)                                 l2 -= 15; // oversold
-    else if (rsi < hp.rsiIdealLo)                      l2 -= 5;  // weak
+    if      (rsi >= hp.rsiIdealLo && rsi <= hp.rsiIdealHi) l2 += 20; // ideal zone
+    else if (rsi > hp.rsiIdealHi  && rsi <= 70)            l2 += 5;  // mildly stretched
+    else if (rsi > 70              && rsi <= 75)            l2 -= 15; // stretched — caution
+    else if (rsi > 75)                                      l2 -= 35; // overbought — strong penalty
+    else if (rsi < 30)                                      l2 -= 15; // oversold
+    else if (rsi < hp.rsiIdealLo)                           l2 -= 5;  // weak momentum
   }
   // MACD direction
   if (s.macd != null) {
-    if (s.macd > 0)  l2 += 12;
-    else              l2 -= 12;
+    if (s.macd > 0) l2 += 12;
+    else            l2 -= 12;
   }
   // Volume confirmation
   if (s.volRatio != null) {
-    if (s.volRatio >= 1.5)       l2 += 15; // strong volume
-    else if (s.volRatio >= 1.0)  l2 += 5;
-    else if (s.volRatio < 0.7)   l2 -= 10; // weak volume
+    if      (s.volRatio >= 1.5) l2 += 15; // strong volume confirms move
+    else if (s.volRatio >= 1.0) l2 += 5;
+    else if (s.volRatio <  0.7) l2 -= 10; // weak volume — suspect breakout
   }
   // Price vs prior resistance
   if (s.priorResistance && p > 0) {
     const distPct = (s.priorResistance - p) / p * 100;
-    if (distPct > 0 && distPct < 5)  l2 += 8;  // approaching resistance
-    else if (distPct <= 0)            l2 += 15; // broke through resistance
-    else if (distPct > 15)            l2 -= 5;  // far from resistance
+    if      (distPct > 0 && distPct < 5) l2 += 8;  // approaching resistance
+    else if (distPct <= 0)               l2 += 15; // broke through resistance
+    else if (distPct > 15)               l2 -= 5;  // far from resistance
   }
   l2 = clamp(l2, 0, 100);
 
   // ── Layer 3: Fundamental context (0–100) ────────────────────────────────
-  // Limited without earnings data — scored from sector + market cap proxy
-  let l3 = 55; // neutral default — Claude will enrich this
+  let l3 = 55;
   if (s.marketCap) {
     const mc = parseFloat(s.marketCap);
-    if (mc > 100)      l3 += 10; // mega-cap, liquid
+    if      (mc > 100) l3 += 10; // mega-cap, liquid, institutional coverage
     else if (mc > 10)  l3 += 5;  // large-cap
-    else if (mc < 1)   l3 -= 10; // micro-cap, risky
+    else if (mc < 1)   l3 -= 10; // micro-cap, higher risk
   }
   l3 = clamp(l3, 0, 100);
 
   // ── Layer 4: Risk parameters (0–100) ────────────────────────────────────
   let l4 = 50;
-  // ATR as % of price — want 1–5% for a reasonable stop
+  // ATR as % of price — 1–5% is the sweet spot for swing trades
   if (p > 0) {
     const atrPct = (atr / p) * 100;
-    if (atrPct >= 1 && atrPct <= 5)  l4 += 25; // ideal risk range
-    else if (atrPct > 5 && atrPct <= 8) l4 += 10;
-    else if (atrPct > 8)              l4 -= 15; // too volatile
-    else if (atrPct < 0.5)            l4 -= 10; // too tight, won't move
+    if      (atrPct >= 1 && atrPct <= 5) l4 += 25; // ideal — stop is manageable
+    else if (atrPct > 5 && atrPct <= 8)  l4 +=  0; // neutral — wide but workable
+    else if (atrPct > 8)                 l4 -= 15; // too volatile — stop too wide
+    else if (atrPct < 0.5)               l4 -= 10; // too tight — won't move enough
   }
-  // Support cushion below price
+  // Support cushion below entry
   if (s.priorSupport && p > 0) {
     const supPct = (p - s.priorSupport) / p * 100;
-    if (supPct <= 5)  l4 += 15; // tight support just below
-    else if (supPct <= 10) l4 += 5;
-    else               l4 -= 5; // support far away
+    if      (supPct <= 5)  l4 += 15; // tight support just below — clean risk
+    else if (supPct <= 10) l4 +=  5;
+    else                   l4 -=  5; // support far away — stop exposed
   }
   l4 = clamp(l4, 0, 100);
 
@@ -1051,16 +1051,31 @@ function preAnalyse(s, holdPeriod, minRR) {
   // ── Overall score — weighted average ────────────────────────────────────
   const overallScore = Math.round(
     l1 * 0.25 + // setup quality
-    l2 * 0.30 + // technicals (most weight — data is richest here)
-    l3 * 0.15 + // fundamental (least data, less weight)
+    l2 * 0.30 + // technicals (most weight — richest data)
+    l3 * 0.15 + // fundamental
     l4 * 0.15 + // risk parameters
     l5 * 0.15   // entry/exit plan
   );
 
   // ── Verdict ─────────────────────────────────────────────────────────────
   let verdict = 'avoid';
-  if (overallScore >= 65 && actualRR >= minRR) verdict = 'buy';
+  if      (overallScore >= 65 && actualRR >= minRR) verdict = 'buy';
   else if (overallScore >= 45 || actualRR >= minRR) verdict = 'watch';
+
+  // ── Hard overrides — these trump the score regardless ───────────────────
+  // RSI overbought: no new longs into extended momentum
+  if (rsi != null) {
+    if (rsi > 80 && verdict === 'buy')   verdict = 'watch'; // RSI >80: cap at watch
+    if (rsi > 80 && overallScore < 55)   verdict = 'avoid'; // RSI >80 + weak: avoid
+    if (rsi > 75 && verdict === 'buy')   verdict = 'watch'; // RSI 75-80: cap at watch
+  }
+  // ATR too wide: stop is unworkable for most position sizes
+  if (p > 0 && atr > 0) {
+    const atrPct = (atr / p) * 100;
+    if (atrPct > 8 && verdict === 'buy') verdict = 'watch'; // wide stop: cap at watch
+  }
+  // Downtrend: don't buy into falling prices
+  if (s.trend === 'downtrend' && verdict === 'buy') verdict = 'watch';
 
   return {
     entry, stop, target, targetBasis,
@@ -1108,11 +1123,12 @@ function generateNotes(s, pa) {
   // Layer 2: Technical confirmation
   let l2parts = [];
   if (rsi != null) {
-    if (rsi > 75)      l2parts.push(`RSI ${rsi} overbought`);
-    else if (rsi > 65) l2parts.push(`RSI ${rsi} mildly stretched`);
-    else if (rsi >= 40) l2parts.push(`RSI ${rsi} ideal zone`);
-    else if (rsi < 30) l2parts.push(`RSI ${rsi} oversold`);
-    else               l2parts.push(`RSI ${rsi} weak`);
+    if      (rsi > 80)           l2parts.push(`RSI ${rsi} strongly overbought`);
+    else if (rsi > 75)           l2parts.push(`RSI ${rsi} overbought`);
+    else if (rsi > 70)           l2parts.push(`RSI ${rsi} stretched`);
+    else if (rsi >= 40)          l2parts.push(`RSI ${rsi} ideal zone`);
+    else if (rsi < 30)           l2parts.push(`RSI ${rsi} oversold`);
+    else                         l2parts.push(`RSI ${rsi} weak`);
   }
   if (s.macd != null) l2parts.push(`MACD ${s.macd > 0 ? 'positive' : 'negative'}`);
   if (s.volRatio != null) {
@@ -1143,12 +1159,11 @@ function generateNotes(s, pa) {
   let l4parts = [];
   if (p > 0 && atr > 0) {
     const atrPct = (atr / p * 100).toFixed(1);
-    if (parseFloat(atrPct) >= 1 && parseFloat(atrPct) <= 5)
-      l4parts.push(`ATR ${atrPct}% ideal`);
-    else if (parseFloat(atrPct) > 8)
-      l4parts.push(`ATR ${atrPct}% volatile`);
-    else
-      l4parts.push(`ATR ${atrPct}%`);
+    const atrNum = parseFloat(atrPct);
+    if      (atrNum >= 1 && atrNum <= 5) l4parts.push(`ATR ${atrPct}% ideal stop range`);
+    else if (atrNum > 5 && atrNum <= 8)  l4parts.push(`ATR ${atrPct}% wide — reduce size`);
+    else if (atrNum > 8)                 l4parts.push(`ATR ${atrPct}% too volatile`);
+    else                                 l4parts.push(`ATR ${atrPct}%`);
   }
   if (s.priorSupport && p > 0) {
     const supPct = ((p - s.priorSupport) / p * 100).toFixed(1);
