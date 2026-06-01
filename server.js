@@ -128,19 +128,95 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── /proxy/anthropic → api.anthropic.com/v1/messages ──────────────────────
+  // Uses streaming proxy: forwards response chunks immediately so Render's
+  // 30-second response timeout is never triggered on long AI responses.
   if (pathname === '/proxy/anthropic') {
     const body = await readBody(req);
     console.log(`[anthropic] ${body.length} bytes`);
-    proxyRequest(
-      'https://api.anthropic.com/v1/messages',
-      'POST',
-      {
+
+    // Parse body and force streaming mode
+    let payload;
+    try { payload = JSON.parse(body); } catch(e) { payload = {}; }
+    payload.stream = true;
+    const streamBody = Buffer.from(JSON.stringify(payload));
+
+    const parsed = new URL('https://api.anthropic.com/v1/messages');
+    const options = {
+      hostname: parsed.hostname,
+      port: 443,
+      path: parsed.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type':       'application/json',
         'x-api-key':          req.headers['x-api-key'] || '',
         'anthropic-version':  req.headers['anthropic-version'] || '2023-06-01',
-        'Content-Length':     body.length
-      },
-      body, res
-    );
+        'Content-Length':     streamBody.length,
+        'User-Agent':         'SwingEdge/2.0'
+      }
+    };
+
+    const proxyReq = https.request(options, upstream => {
+      // Stream: collect SSE chunks, extract text, reassemble into one JSON response
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': '*'
+      });
+
+      let fullText = '';
+      let buffer = '';
+      let inputTokens = 0, outputTokens = 0;
+
+      upstream.on('data', chunk => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(data);
+            // Accumulate text deltas
+            if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta') {
+              fullText += evt.delta.text || '';
+            }
+            // Capture usage
+            if (evt.type === 'message_delta' && evt.usage) {
+              outputTokens = evt.usage.output_tokens || 0;
+            }
+            if (evt.type === 'message_start' && evt.message?.usage) {
+              inputTokens = evt.message.usage.input_tokens || 0;
+            }
+          } catch(e) {}
+        }
+      });
+
+      upstream.on('end', () => {
+        // Send back a standard non-streaming Anthropic response shape
+        const response = {
+          content: [{ type: 'text', text: fullText }],
+          usage: { input_tokens: inputTokens, output_tokens: outputTokens }
+        };
+        console.log(`[anthropic] done — ${fullText.length} chars`);
+        res.end(JSON.stringify(response));
+      });
+
+      upstream.on('error', err => {
+        console.error('[anthropic stream error]', err.message);
+        res.end(JSON.stringify({ error: { message: err.message } }));
+      });
+    });
+
+    proxyReq.on('error', err => {
+      console.error('[anthropic proxy error]', err.message);
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Proxy error: ' + err.message } }));
+    });
+
+    proxyReq.write(streamBody);
+    proxyReq.end();
     return;
   }
 
