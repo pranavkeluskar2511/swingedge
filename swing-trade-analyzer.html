@@ -1084,20 +1084,43 @@ function generateNotes(s, pa) {
   const atr = s.atr14 || 0;
 
   // Layer 1: Setup quality
-  const trendNote = {
+  const trendMap = {
     'strong uptrend': 'Strong uptrend above 50 & 200MA',
     'uptrend':        'Uptrend above both MAs',
-    'mixed':          'Mixed trend MAs conflicting',
+    'mixed':          'Mixed — MAs conflicting',
     'downtrend':      'Downtrend below both MAs',
-    'unknown':        'Trend unclear insufficient data',
-  }[s.trend] || 'Trend unclear';
+    'unknown':        'Trend unknown — MA data limited',
+  };
 
-  let l1note = trendNote;
-  if (s.wk52Hi && s.wk52Lo) {
-    const rangePct = Math.round((p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo) * 100);
-    if (rangePct > 75) l1note += ` — near 52w high (${rangePct}%)`;
-    else if (rangePct < 25) l1note += ` — near 52w low (${rangePct}%)`;
+  // Derive trend directly from the raw MA values as a fallback
+  // (in case s.trend is undefined or empty)
+  let trendKey = (s.trend || '').toLowerCase().trim();
+  if (!trendMap[trendKey]) {
+    // Re-derive from MA data
+    const p2 = s.price || 0;
+    if (s.ma50 && s.ma200) {
+      if (p2 > s.ma50 && p2 > s.ma200 && s.ma50 > s.ma200) trendKey = 'strong uptrend';
+      else if (p2 > s.ma50 && p2 > s.ma200)                 trendKey = 'uptrend';
+      else if (p2 < s.ma50 && p2 < s.ma200)                 trendKey = 'downtrend';
+      else                                                    trendKey = 'mixed';
+    } else if (s.ma50) {
+      trendKey = p2 > s.ma50 ? 'uptrend' : 'downtrend';
+    } else {
+      trendKey = 'unknown';
+    }
   }
+  const trendNote = trendMap[trendKey] || `Trend: ${trendKey}`;
+
+  // 52-week range position
+  let rangeNote = '';
+  if (s.wk52Hi && s.wk52Lo && s.wk52Hi > s.wk52Lo) {
+    const rangePct = Math.round((p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo) * 100);
+    if (rangePct > 75)      rangeNote = ` — near 52w high (${rangePct}%)`;
+    else if (rangePct < 25) rangeNote = ` — near 52w low (${rangePct}%)`;
+    else                    rangeNote = ` — mid 52w range (${rangePct}%)`;
+  }
+
+  const l1note = trendNote + rangeNote;
 
   // Layer 2: Technical confirmation
   let l2parts = [];
