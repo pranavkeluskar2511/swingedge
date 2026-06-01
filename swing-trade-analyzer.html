@@ -1336,9 +1336,9 @@ async function runAnalysis() {
           dbg(`Batch ${b+1}: built ${batches[b].filter(s => preAnalyse(s, holdPeriod, parseFloat(minRR))).length} results — total so far: ${allResults.length}`, 'ok');
         }
 
-          // Stream results into UI immediately
-          renderStreamingResults(allResults, b+1, batches.length);
-        }
+        // Stream results into UI immediately
+        renderStreamingResults(allResults, b+1, batches.length);
+
       } catch(batchErr) {
         runTokens.failedBatches++;
         dbg(`Batch ${b+1} failed: ${batchErr.message}`, 'error');
