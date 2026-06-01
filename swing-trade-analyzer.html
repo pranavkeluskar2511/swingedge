@@ -867,7 +867,8 @@ For each stock, apply the 5-layer swing trade framework using the real data abov
 For entry, target, and stop: derive them from the ACTUAL current price and ATR provided. Entry should be at or near current price or a specific breakout level. Stop = entry minus (1.5 to 2x ATR). Target = entry plus (minRR x stop distance).
 
 Return ONLY a valid JSON array — no text outside it, no markdown fences, no comments.
-Schema for each object:
+Keep ALL string fields short (under 12 words each) to minimise tokens.
+Schema for each object (one per ticker, no extra fields):
 {"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"buy","overallScore":0,"rr":"0.0","upside":"+0.0%","stopPct":"-0.0%","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","wk52":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
 
 Verdict rules: buy = overallScore >= 65 AND rr >= ${minRR}. watch = overallScore 45-64 OR rr < ${minRR}. avoid = overallScore < 45 or setup broken.`;
@@ -898,143 +899,247 @@ function parseJSON(raw) {
 }
 
 // ── Main run ──────────────────────────────────────────────────────────────────
+const BATCH_SIZE = 5;      // tickers per AI call (stays well within 8k token limit)
+const POLY_CONCURRENCY = 5; // parallel Polygon fetches
+
 async function runAnalysis() {
-  // Clear debug log
   const log = document.getElementById('debugLog');
   if (log) log.innerHTML = '';
   document.getElementById('debugPanel').style.display = 'none';
 
-  saveKeys(); // force re-read in case paste didn't fire
+  saveKeys();
 
   if (!POLY_KEY) { alert('Please enter your Polygon.io API key.'); return; }
   if (!ANTH_KEY) { alert('Please enter your Anthropic API key.'); return; }
   if (tickers.length === 0) { tickerInput.focus(); alert('Add at least one ticker, or upload an Excel file.'); return; }
 
-  dbg(`Starting analysis for: ${tickers.join(', ')}`);
+  dbg(`Starting analysis for ${tickers.length} tickers: ${tickers.join(', ')}`);
   dbg(`Polygon key: ${POLY_KEY.slice(0,8)}… | Anthropic key: ${ANTH_KEY.slice(0,12)}…`);
   await detectProxy();
-  dbg(`Routing: Polygon=${USE_LOCAL_PROXY ? 'proxy' : 'direct'} | Anthropic=direct (bypasses timeout)`);
+  dbg(`Routing: Polygon=${USE_LOCAL_PROXY ? 'proxy' : 'direct'} | Anthropic=direct`);
 
-  // Warn if too many tickers on Render — AI response may timeout
-  if (USE_LOCAL_PROXY && tickers.length > 5) {
-    dbg(`⚠ ${tickers.length} tickers detected — Render free tier has a 30s timeout. Tip: analyze 5 or fewer at a time for best results.`, 'error');
-  }
+  const numBatches = Math.ceil(tickers.length / BATCH_SIZE);
+  dbg(`Split into ${numBatches} batch${numBatches>1?'es':''} of up to ${BATCH_SIZE} — results appear as each batch completes`);
 
   const btn = document.getElementById('analyzeBtn');
   btn.disabled = true;
 
-  const steps = [
-    ...tickers.map(t => `Fetching live data: ${t}`),
-    'Computing RSI, MACD, ATR, MAs…',
-    'Running 5-layer AI analysis…',
-    'Calculating entry / exit levels…'
-  ];
-  initProgress(steps);
+  const holdPeriod = document.getElementById('holdPeriod').value;
+  const riskPct    = document.getElementById('riskPct').value;
+  const minRR      = document.getElementById('minRR').value;
+  const regime     = document.getElementById('marketRegime').value;
 
-  const holdPeriod  = document.getElementById('holdPeriod').value;
-  const riskPct     = document.getElementById('riskPct').value;
-  const minRR       = document.getElementById('minRR').value;
-  const regime      = document.getElementById('marketRegime').value;
+  // Show initial progress panel
+  initProgress([
+    `Fetching Polygon data (${tickers.length} tickers in parallel)…`,
+    ...Array.from({length: numBatches}, (_,i) => `AI analysis — batch ${i+1} of ${numBatches} (${batchLabel(i, tickers)})`)
+  ]);
+
+  // Clear results area and show streaming container
+  document.getElementById('resultsContainer').innerHTML = `
+    <div id="streamingHeader" style="margin-bottom:16px">
+      <div style="font-family:var(--display);font-size:15px;font-weight:600;margin-bottom:4px">Analyzing ${tickers.length} stocks</div>
+      <div style="font-size:11px;color:var(--muted)" id="batchStatus">Fetching market data…</div>
+    </div>
+    <div id="streamSummary"></div>
+    <div id="streamTabs" style="display:none"></div>
+    <div id="streamView1" style="display:none"></div>
+    <div id="streamView2" style="display:none"></div>`;
+
+  let allResults = [];
 
   try {
-    // 1. Fetch polygon data for each ticker
-    const stockData = [];
-    for (let i = 0; i < tickers.length; i++) {
-      setStep(i, 'active');
-      setProgressTitle(`Fetching live data from Polygon.io… (${i+1}/${tickers.length})`);
+    // ── Phase 1: Fetch ALL Polygon data in parallel ──────────────────────────
+    setStep(0, 'active');
+    setProgressTitle(`Fetching Polygon data for all ${tickers.length} tickers…`);
+
+    const stockData = await fetchAllParallel(tickers, POLY_CONCURRENCY);
+    setStep(0, 'done');
+    dbg(`✓ Polygon fetch complete — ${stockData.filter(s=>s.price>0).length}/${tickers.length} with valid prices`, 'ok');
+
+    // ── Phase 2: AI analysis in batches of BATCH_SIZE ────────────────────────
+    const batches = chunkArray(stockData, BATCH_SIZE);
+
+    for (let b = 0; b < batches.length; b++) {
+      const batchStep = b + 1;
+      setStep(batchStep, 'active');
+      const bTickers = batches[b].map(s => s.ticker).join(', ');
+      setProgressTitle(`Claude analyzing batch ${b+1}/${batches.length}: ${bTickers}`);
+      document.getElementById('batchStatus').textContent =
+        `Batch ${b+1} of ${batches.length} — analyzing ${bTickers}…`;
+
+      dbg(`Batch ${b+1}/${batches.length}: sending ${batches[b].length} tickers to Claude…`);
+
       try {
-        const data = await fetchTickerData(tickers[i]);
-        stockData.push(data);
-        setStep(i, 'done');
-        dbg(`✓ ${tickers[i]}: price=$${data.price} (${data.priceSource}), bars=${data.rawBars?.length||0}, RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
-      } catch(e) {
-        setStep(i, 'done');
-        dbg(`✗ Polygon fetch failed for ${tickers[i]}: ${e.message}`, 'error');
-        console.warn(`Polygon fetch failed for ${tickers[i]}:`, e);
-        // push minimal stub so AI can still attempt
-        stockData.push({ ticker: tickers[i], companyName: tickers[i], price: 0,
-          prevClose:0, changePct:0, volume:0, rsi14:null, macd:null,
-          ma20:null, ma50:null, ma200:null, atr14:null, trend:'unknown',
-          closes:[], sparkBars:[], rawBars:[], wk52Hi:null, wk52Lo:null,
-          volRatio:null, sector:'', marketCap:null });
+        const prompt = buildPrompt(batches[b], holdPeriod, riskPct, minRR, regime);
+        const aiData = await anthropicFetch({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 8000,
+          messages: [{ role: 'user', content: prompt }]
+        });
+
+        if (aiData.error) throw new Error(`Anthropic: ${aiData.error.message}`);
+        if (aiData.type === 'error') throw new Error(`Anthropic: ${aiData.error?.message}`);
+
+        let rawText = '';
+        if (Array.isArray(aiData.content)) rawText = aiData.content.find(b => b.type==='text')?.text || '';
+        else if (typeof aiData.content === 'string') rawText = aiData.content;
+        else if (aiData.completion) rawText = aiData.completion;
+
+        const tokensOut = aiData.usage?.output_tokens || '?';
+        dbg(`Batch ${b+1} response: ${rawText.length} chars, ${tokensOut}/8000 tokens`, tokensOut > 7500 ? 'error' : 'ok');
+
+        const batchResults = parseJSON(rawText);
+        if (!batchResults || batchResults.length === 0) {
+          dbg(`Batch ${b+1}: parse failed — ${rawText.slice(0,150)}`, 'error');
+        } else {
+          // Attach live Polygon data
+          batchResults.forEach(r => {
+            const live = batches[b].find(s => s.ticker === r.ticker);
+            if (live) { r._live = live; r.currentPrice = live.price || r.currentPrice; }
+          });
+          allResults = [...allResults, ...batchResults];
+          dbg(`Batch ${b+1}: parsed ${batchResults.length} results — total so far: ${allResults.length}`, 'ok');
+
+          // Stream results into UI immediately
+          renderStreamingResults(allResults, b+1, batches.length);
+        }
+      } catch(batchErr) {
+        dbg(`Batch ${b+1} failed: ${batchErr.message}`, 'error');
       }
+
+      setStep(batchStep, 'done');
     }
 
-    // 2. Technicals step
-    const techStep = tickers.length;
-    setStep(techStep, 'active');
-    setProgressTitle('Technicals computed — sending to AI…');
-    await new Promise(r => setTimeout(r, 300));
-    setStep(techStep, 'done');
-
-    // 3. AI analysis
-    const aiStep = tickers.length + 1;
-    setStep(aiStep, 'active');
-    setProgressTitle('Claude is running the 5-layer analysis…');
-
-    const prompt = buildPrompt(stockData, holdPeriod, riskPct, minRR, regime);
-    dbg(`Sending to Anthropic API (${USE_LOCAL_PROXY ? 'local proxy' : 'direct'})…`);
-    const aiData = await anthropicFetch({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 4000,
-      messages: [{ role: 'user', content: prompt }]
-    });
-    dbg(`Anthropic response keys: ${Object.keys(aiData||{}).join(',')}`);
-
-    // Handle error responses
-    if (aiData.error) throw new Error(`Anthropic: ${aiData.error.message || JSON.stringify(aiData.error)}`);
-    if (aiData.type === 'error') throw new Error(`Anthropic: ${aiData.error?.message || JSON.stringify(aiData)}`);
-
-    // Extract text — handle both content array and direct text
-    let rawText = '';
-    if (Array.isArray(aiData.content)) {
-      rawText = aiData.content.find(b => b.type === 'text')?.text || '';
-    } else if (typeof aiData.content === 'string') {
-      rawText = aiData.content;
-    } else if (aiData.completion) {
-      rawText = aiData.completion; // legacy format
-    }
-
-    if (!rawText) {
-      dbg(`Full Anthropic response: ${JSON.stringify(aiData).slice(0,400)}`, 'error');
-      throw new Error(`Invalid response format — got: ${JSON.stringify(aiData).slice(0,120)}`);
-    }
-    dbg(`AI response received (${rawText.length} chars)`);
-    setStep(aiStep, 'done');
-
-    const calcStep = tickers.length + 2;
-    setStep(calcStep, 'active');
-    dbg(`Parsing AI JSON response…`);
-    const results = parseJSON(rawText);
-    if (!results || results.length === 0) {
-      dbg(`Parse failed. Raw response start: ${rawText.slice(0,200)}`, 'error');
-      throw new Error('Could not parse AI response JSON');
-    }
-    dbg(`Parsed ${results.length} result(s) successfully`, 'ok');
-
-    // Merge with real polygon data
-    results.forEach(r => {
-      const live = stockData.find(s => s.ticker === r.ticker);
-      if (live) {
-        r._live = live;
-        // Override currentPrice with real polygon price
-        r.currentPrice = live.price || r.currentPrice;
-      }
-    });
-
-    setStep(calcStep, 'done');
+    // ── Phase 3: Final render ─────────────────────────────────────────────────
     hideProgress();
-    renderResults(results);
-    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+    if (allResults.length > 0) {
+      renderResults(allResults);
+      document.getElementById('lastUpdated').textContent =
+        `Updated ${new Date().toLocaleTimeString()} — ${allResults.length}/${tickers.length} analyzed`;
+      dbg(`✓ Complete — ${allResults.length}/${tickers.length} stocks analyzed`, 'ok');
+    } else {
+      renderError('No results returned from any batch. Check API keys and try again.');
+    }
 
   } catch(err) {
     dbg(`FATAL ERROR: ${err.message}`, 'error');
     hideProgress();
     renderError(err.message);
-    console.error(err);
   } finally {
     btn.disabled = false;
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function batchLabel(i, allTickers) {
+  const start = i * BATCH_SIZE;
+  const slice = allTickers.slice(start, start + BATCH_SIZE);
+  return slice.join(', ');
+}
+
+function chunkArray(arr, size) {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+}
+
+// Fetch all tickers in parallel with a concurrency limit
+async function fetchAllParallel(tickerList, concurrency) {
+  const results = new Array(tickerList.length);
+  let idx = 0;
+
+  async function worker() {
+    while (idx < tickerList.length) {
+      const i = idx++;
+      const ticker = tickerList[i];
+      try {
+        const data = await fetchTickerData(ticker);
+        results[i] = data;
+        dbg(`✓ ${ticker}: $${data.price} (${data.priceSource}), RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
+      } catch(e) {
+        dbg(`✗ ${ticker}: ${e.message}`, 'error');
+        results[i] = {
+          ticker, companyName: ticker, price: 0, prevClose: 0,
+          changePct: null, priceSource: 'unavailable', priceIsLive: false, priceIsClose: false,
+          volume: 0, avgVol20: null, volRatio: null,
+          rsi14: null, macd: null, ma20: null, ma50: null, ma200: null, atr14: null,
+          trend: 'unknown', closes: [], sparkBars: [], rawBars: [],
+          wk52Hi: null, wk52Lo: null, sector: '', marketCap: null
+        };
+      }
+    }
+  }
+
+  // Run N workers in parallel
+  await Promise.all(Array.from({length: concurrency}, worker));
+  return results;
+}
+
+// Show interim results while batches are still running
+function renderStreamingResults(partialResults, batchDone, totalBatches) {
+  const pct = Math.round((batchDone / totalBatches) * 100);
+  document.getElementById('batchStatus').textContent =
+    `${batchDone} of ${totalBatches} batches complete (${pct}%) — ${partialResults.length} stocks analyzed so far`;
+
+  // Sort interim results same as final
+  const sorted = [...partialResults].sort((a, b) => {
+    const order = { buy: 0, avoid: 1, watch: 2 };
+    const vd = (order[a.verdict]??2) - (order[b.verdict]??2);
+    return vd !== 0 ? vd : (b.overallScore||0) - (a.overallScore||0);
+  });
+
+  // Show a compact interim table (no tabs yet — full render happens at the end)
+  const buys   = sorted.filter(r => r.verdict === 'buy').length;
+  const watches = sorted.filter(r => r.verdict === 'watch').length;
+  const avoids  = sorted.filter(r => r.verdict === 'avoid').length;
+
+  const summaryEl = document.getElementById('streamSummary');
+  summaryEl.innerHTML = `
+    <div class="summary-bar" style="margin-bottom:12px">
+      <div class="sum-item"><div class="sum-label">Buy</div><div class="sum-val" style="color:var(--bull)">${buys}</div></div>
+      <div class="sum-item"><div class="sum-label">Watch</div><div class="sum-val" style="color:var(--warn)">${watches}</div></div>
+      <div class="sum-item"><div class="sum-label">Avoid</div><div class="sum-val" style="color:var(--bear)">${avoids}</div></div>
+      <div class="sum-item"><div class="sum-label">Analyzed</div><div class="sum-val">${partialResults.length}</div></div>
+      <div class="sum-item"><div class="sum-label">Remaining</div><div class="sum-val" style="color:var(--muted)">${tickers.length - partialResults.length}</div></div>
+    </div>`;
+
+  // Compact interim rows
+  let rows = sorted.map(r => {
+    const live = r._live || {};
+    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
+    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const rrNum = parseFloat(r.rr||0);
+    const rrColor = rrNum>=2.5?'var(--bull)':rrNum>=1.5?'var(--warn)':'var(--bear)';
+    const chgColor = (live.changePct||0)>=0?'var(--bull)':'var(--bear)';
+    const chgSign  = (live.changePct||0)>=0?'+':'';
+    const isLive = live.priceIsLive;
+    return `<tr>
+      <td><div class="t-ticker">${r.ticker}</div><div class="t-name">${r.companyName||''}</div>
+        ${isLive ? `<div class="t-chg" style="color:${chgColor}">${chgSign}${live.changePct||0}%</div>` : `<div class="t-chg last-close-badge">◷ last close</div>`}
+      </td>
+      <td><span class="verdict-badge ${vc}">${vl}</span></td>
+      <td class="td-r"><div class="t-price pv-current">$${fmt(r.currentPrice)}</div></td>
+      <td class="td-r"><div class="t-price pv-entry">$${fmt(r.entryPrice)}</div></td>
+      <td class="td-r"><div class="t-price pv-target">$${fmt(r.targetPrice)}</div><div class="t-sub pos">${r.upside||''}</div></td>
+      <td class="td-r"><div class="t-price pv-stop">$${fmt(r.stopPrice)}</div><div class="t-sub neg">${r.stopPct||''}</div></td>
+      <td class="td-r"><div class="rr-val" style="color:${rrColor}">${r.rr||'—'}</div></td>
+    </tr>`;
+  }).join('');
+
+  document.getElementById('streamView1').style.display = 'block';
+  document.getElementById('streamView1').innerHTML = `
+    <div class="trade-table-wrap">
+      <table class="trade-table">
+        <thead><tr>
+          <th>Ticker</th><th>Signal</th>
+          <th class="th-r">Current</th><th class="th-r">Entry</th>
+          <th class="th-r">Target</th><th class="th-r">Stop</th><th class="th-r">R:R</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────
