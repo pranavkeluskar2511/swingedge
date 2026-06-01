@@ -802,6 +802,31 @@ async function fetchTickerData(ticker) {
   const peRatio    = snap?.day?.vw && closes.length ? null : null; // not in free snapshot
   const shareCount = details?.share_class_shares_outstanding;
 
+  // ── Chart structure: swing highs/lows and prior resistance ──────────────────
+  // Look back over last 60 bars for meaningful price levels
+  const recentBars = bars.slice(-60);
+
+  // Prior resistance: highest high in last 20 bars (excluding last 3 — recent action)
+  const res20Bars = recentBars.slice(-23, -3);
+  const priorResistance = res20Bars.length
+    ? +Math.max(...res20Bars.map(b => b.h)).toFixed(2)
+    : null;
+
+  // Prior support: lowest low in last 20 bars (excluding last 3)
+  const priorSupport = res20Bars.length
+    ? +Math.min(...res20Bars.map(b => b.l)).toFixed(2)
+    : null;
+
+  // Recent consolidation range (last 10 bars): used for measured-move target
+  const last10 = recentBars.slice(-10);
+  const consHigh = last10.length ? +Math.max(...last10.map(b => b.h)).toFixed(2) : null;
+  const consLow  = last10.length ? +Math.min(...last10.map(b => b.l)).toFixed(2) : null;
+  const consRange = (consHigh && consLow) ? +(consHigh - consLow).toFixed(2) : null;
+
+  // Swing high (last 60 bars): next major resistance target area
+  const swingHi60 = recentBars.length ? +Math.max(...recentBars.map(b => b.h)).toFixed(2) : null;
+  const swingLo60 = recentBars.length ? +Math.min(...recentBars.map(b => b.l)).toFixed(2) : null;
+
   // Recent bars for spark (last 30)
   const sparkBars = bars.slice(-30).map(b => b.c);
 
@@ -813,6 +838,7 @@ async function fetchTickerData(ticker) {
     volume, avgVol20, volRatio,
     rsi14, macd, ma20, ma50, ma200, atr14,
     wk52Hi, wk52Lo, trend,
+    priorResistance, priorSupport, consHigh, consLow, consRange, swingHi60, swingLo60,
     closes: closes.slice(-30), sparkBars,
     rawBars: bars.slice(-60)
   };
@@ -820,60 +846,114 @@ async function fetchTickerData(ticker) {
 
 // ── Build AI prompt with real data ────────────────────────────────────────────
 function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
+
+  // ── Hold-period specific rules ────────────────────────────────────────────
+  const holdRules = {
+    short: {
+      label:        '3–5 days (short-term momentum)',
+      stopMult:     '1.0 to 1.5× ATR below entry',
+      targetMethod: 'Entry + (1.5 to 2.0× ATR) × minRR. Target a single momentum push — do NOT project beyond the prior 20-bar resistance level. Keep targets tight.',
+      exitStyle:    'Exit at first sign of momentum exhaustion. Do not hold through consolidation.',
+      rsiGuidance:  'RSI 50–65 is ideal for entry — momentum is building but not overbought.',
+      patternFocus: 'Intraday breakout, gap continuation, momentum burst off support.',
+      atrRole:      'ATR drives both stop AND target. 3–5 day targets are typically 1–2 ATR moves from entry.',
+    },
+    medium: {
+      label:        '1–3 weeks (swing trade)',
+      stopMult:     '1.5 to 2.0× ATR below entry',
+      targetMethod: `First target: prior 20-bar resistance level (if within 3–6× ATR of entry). Second target: measured move = entry + consolidation range (consRange). If no clear resistance, use entry + (3 to 5× ATR) × minRR. Choose whichever is closest but still meets minRR.`,
+      exitStyle:    'Scale out 50% at first target, trail stop on remainder to lock in gains.',
+      rsiGuidance:  'RSI 40–65 acceptable. Avoid if RSI > 75 (overbought for a 1–3 week hold).',
+      patternFocus: 'Base breakout, bull flag, cup handle, pullback to MA support.',
+      atrRole:      'ATR sets the stop; resistance level or measured move sets the target. Both must produce rr >= minRR.',
+    },
+    long: {
+      label:        '4–8 weeks (position swing)',
+      stopMult:     '2.0 to 2.5× ATR below entry, or below 50-day MA if closer',
+      targetMethod: `Primary target: 60-bar swing high (swingHi60) if above entry. Secondary: 52-week high if stock is near a breakout. Fallback: entry + (6 to 10× ATR) × minRR. Target the next major structural level, not just a nearby resistance.`,
+      exitStyle:    'Hold through minor pullbacks. Trail stop below each higher low as trade develops.',
+      rsiGuidance:  'RSI 40–70 acceptable. Prefer entries when RSI is recovering from 40–50.',
+      patternFocus: 'Multi-week base breakout, trend resumption after correction, sector rotation leader.',
+      atrRole:      'ATR sets stop only. Target is driven by chart structure: swing highs, 52w high, or major resistance.',
+    }
+  };
+
+  const rules = holdRules[holdPeriod] || holdRules.medium;
+
   const stockSummaries = stocks.map(s => {
     const aboveMa50  = s.ma50  ? (s.price > s.ma50  ? 'yes' : 'no') : 'n/a';
     const aboveMa200 = s.ma200 ? (s.price > s.ma200 ? 'yes' : 'no') : 'n/a';
-    const volStr = s.volRatio ? `${s.volRatio}x 20d avg` : 'n/a';
-    const wk52str = s.wk52Hi ? `${s.wk52Lo} - ${s.wk52Hi}` : 'n/a';
+    const volStr     = s.volRatio ? `${s.volRatio}x 20d avg` : 'n/a';
+    const wk52str    = s.wk52Hi ? `${s.wk52Lo} - ${s.wk52Hi}` : 'n/a';
     return `
 TICKER: ${s.ticker}
-Company: ${s.companyName}
-Sector: ${s.sector || 'n/a'}
-Market cap: ${s.marketCap || 'n/a'}
+Company: ${s.companyName} | Sector: ${s.sector || 'n/a'} | Market cap: ${s.marketCap || 'n/a'}
 
 LIVE PRICE DATA:
 - Price: ${s.price} (source: ${s.priceSource})
 - Prev close: ${s.prevClose}
-- Day change: ${s.changePct != null ? s.changePct + '%' : 'n/a (last close price used)'}
+- Day change: ${s.changePct != null ? s.changePct + '%' : 'n/a'}
 - Today volume: ${s.volume ? s.volume.toLocaleString() : 'n/a'} (${volStr})
 - 52-week range: ${wk52str}
 
-TECHNICALS (computed from Polygon daily bars):
+TECHNICALS:
 - RSI(14): ${s.rsi14 ?? 'n/a'}
 - MACD line: ${s.macd ?? 'n/a'}
-- MA20: ${s.ma20 ?? 'n/a'}
-- MA50: ${s.ma50 ?? 'n/a'} | price above MA50: ${aboveMa50}
-- MA200: ${s.ma200 ?? 'n/a'} | price above MA200: ${aboveMa200}
+- MA20: ${s.ma20 ?? 'n/a'} | MA50: ${s.ma50 ?? 'n/a'} (above: ${aboveMa50}) | MA200: ${s.ma200 ?? 'n/a'} (above: ${aboveMa200})
 - ATR(14): ${s.atr14 ?? 'n/a'}
 - Trend: ${s.trend}
-- Last 10 closes: ${s.closes.slice(-10).join(', ')}`.trim();
+- Last 10 closes: ${s.closes.slice(-10).join(', ')}
+
+CHART STRUCTURE (computed from Polygon bars — use these to anchor targets):
+- Prior resistance (20-bar high, ex last 3 bars): ${s.priorResistance ?? 'n/a'}
+- Prior support (20-bar low, ex last 3 bars): ${s.priorSupport ?? 'n/a'}
+- Recent consolidation high (last 10 bars): ${s.consHigh ?? 'n/a'}
+- Recent consolidation low (last 10 bars): ${s.consLow ?? 'n/a'}
+- Consolidation range (consRange = consHigh - consLow): ${s.consRange ?? 'n/a'}
+- 60-bar swing high: ${s.swingHi60 ?? 'n/a'}
+- 60-bar swing low: ${s.swingLo60 ?? 'n/a'}`.trim();
   }).join('\n\n---\n\n');
 
-  return `You are an expert swing trade analyst. You have been given REAL live market data fetched from Polygon.io for each stock below. Use ONLY these actual numbers for your analysis — do not invent or substitute any prices, volumes, or technicals.
+  return `You are an expert swing trade analyst. Use ONLY the real Polygon.io data below — do not invent prices or technicals.
 
-PARAMETERS:
-- Hold period: ${holdPeriod}
+TRADE PARAMETERS:
+- Hold period: ${rules.label}
 - Risk per trade: ${riskPct}% of capital
 - Minimum reward:risk required: ${minRR}:1
 - Market regime: ${regime}
+
+HOLD-PERIOD RULES FOR THIS ANALYSIS (${rules.label}):
+- Stop placement: ${rules.stopMult}
+- Target method: ${rules.targetMethod}
+- Exit style: ${rules.exitStyle}
+- RSI guidance: ${rules.rsiGuidance}
+- Pattern focus: ${rules.patternFocus}
+- ATR role: ${rules.atrRole}
 
 LIVE STOCK DATA:
 ${stockSummaries}
 
 TASK:
-For each stock, apply the 5-layer swing trade framework using the real data above:
-1. Setup quality: chart pattern (use last 10 closes to identify), trend direction (use MAs), relative strength, market regime fit
-2. Technical confirmation: RSI level, MACD signal, volume vs average, key support/resistance from price data
-3. Fundamental context: sector momentum, company quality, macro fit given regime
-4. Risk parameters: ATR-based stop placement, reward:risk calculation, position sizing feasibility
-5. Entry and exit plan: specific entry trigger price, exact profit target, exact stop loss
+For each stock apply the 5-layer framework:
+1. Setup quality: pattern (use last 10 closes + chart structure), trend (MAs), RS, regime fit
+2. Technical confirmation: RSI, MACD, volume, support/resistance from chart structure above
+3. Fundamental context: sector momentum, company quality, macro fit
+4. Risk parameters: stop per hold-period rules above, rr calculation, liquidity
+5. Entry/exit plan: specific entry trigger, target anchored to chart levels per hold-period rules, stop
 
-For entry, target, and stop: derive them from the ACTUAL current price and ATR provided. Entry should be at or near current price or a specific breakout level. Stop = entry minus (1.5 to 2x ATR). Target = entry plus (minRR x stop distance).
+PRICING RULES — follow exactly for ${rules.label}:
+- Entry: current price or specific breakout/pullback trigger
+- Stop: ${rules.stopMult}
+- Target: ${rules.targetMethod}
+- Verify: (targetPrice - entryPrice) / (entryPrice - stopPrice) >= ${minRR}
+- If target derived from resistance is too close to meet minRR, fall back to ATR-based target
 
 Return ONLY a valid JSON array — no text outside it, no markdown fences, no comments.
-Keep ALL string fields short (under 12 words each) to minimise tokens.
-Schema for each object (one per ticker, no extra fields):
-{"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"buy","overallScore":0,"rr":"0.0","upside":"+0.0%","stopPct":"-0.0%","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","wk52":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
+Keep ALL string fields under 12 words to minimise tokens.
+Schema (one object per ticker):
+{"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"buy","overallScore":0,"rr":"0.0","upside":"+0.0%","stopPct":"-0.0%","targetBasis":"","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","wk52":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
+
+Note: "targetBasis" should be a short label for how the target was set, e.g. "prior resistance $X", "measured move $X", "ATR extension", "swing high $X", "52w high $X".
 
 Verdict rules: buy = overallScore >= 65 AND rr >= ${minRR}. watch = overallScore 45-64 OR rr < ${minRR}. avoid = overallScore < 45 or setup broken.`;
 }
@@ -1215,6 +1295,7 @@ function renderResults(results) {
       <td class="td-r">
         <div class="t-price pv-target">$${fmt(r.targetPrice)}</div>
         <div class="t-sub pos">${r.upside||''}</div>
+        ${r.targetBasis ? `<div class="t-sub" style="color:var(--muted);font-size:9px">${r.targetBasis}</div>` : ''}
       </td>
       <td class="td-r">
         <div class="t-price pv-stop">$${fmt(r.stopPrice)}</div>
@@ -1310,7 +1391,7 @@ function renderResults(results) {
         </div>
         <div class="a-prices">
           <div class="a-price-cell"><div class="a-price-label">Entry</div><div class="a-price-val pv-entry">$${fmt(r.entryPrice)}</div></div>
-          <div class="a-price-cell"><div class="a-price-label">Target</div><div class="a-price-val pv-target">$${fmt(r.targetPrice)} <span class="pos" style="font-size:10px">${r.upside||''}</span></div></div>
+          <div class="a-price-cell"><div class="a-price-label">Target</div><div class="a-price-val pv-target">$${fmt(r.targetPrice)} <span class="pos" style="font-size:10px">${r.upside||''}</span></div>${r.targetBasis?`<div style="font-size:9px;color:var(--muted);margin-top:2px">${r.targetBasis}</div>`:''}</div>
           <div class="a-price-cell"><div class="a-price-label">Stop</div><div class="a-price-val pv-stop">$${fmt(r.stopPrice)} <span class="neg" style="font-size:10px">${r.stopPct||''}</span></div></div>
         </div>
         <div class="a-right">
@@ -1399,7 +1480,7 @@ function exportData(format) {
   const tradeHeaders = [
     'Ticker', 'Company', 'Signal', 'Score', 'R:R',
     'Current Price', 'Price Source',
-    'Entry Price', 'Target Price', 'Upside %',
+    'Entry Price', 'Target Price', 'Target Basis', 'Upside %',
     'Stop Price', 'Stop %',
     'Entry Note', 'Exit Note', 'Stop Note'
   ];
@@ -1414,8 +1495,9 @@ function exportData(format) {
       r.rr || '',
       r.currentPrice || '',
       live.priceSource || '',
-      r.entryPrice || '',
+      r.entryPrice  || '',
       r.targetPrice || '',
+      r.targetBasis || '',
       r.upside ? r.upside.replace('+','') : '',
       r.stopPrice || '',
       r.stopPct ? r.stopPct.replace('-','') : '',
