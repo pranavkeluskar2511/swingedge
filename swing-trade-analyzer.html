@@ -844,118 +844,247 @@ async function fetchTickerData(ticker) {
   };
 }
 
-// ── Build AI prompt with real data ────────────────────────────────────────────
-function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
+// ═══════════════════════════════════════════════════════════════════════════
+// PRE-ANALYSIS ENGINE
+// Computes all 5 layer scores, entry/stop/target prices, R:R and verdict
+// entirely in JavaScript from Polygon data.
+// Claude only receives the pre-computed scores + prices and writes the
+// trade narrative — no math, no scoring, just interpretation text.
+// This cuts output tokens by ~70% and makes results deterministic.
+// ═══════════════════════════════════════════════════════════════════════════
 
-  // ── Hold-period specific rules ────────────────────────────────────────────
-  const holdRules = {
-    short: {
-      label:        '3–5 days (short-term momentum)',
-      stopMult:     '1.0 to 1.5× ATR below entry',
-      targetMethod: 'Entry + (1.5 to 2.0× ATR) × minRR. Target a single momentum push — do NOT project beyond the prior 20-bar resistance level. Keep targets tight.',
-      exitStyle:    'Exit at first sign of momentum exhaustion. Do not hold through consolidation.',
-      rsiGuidance:  'RSI 50–65 is ideal for entry — momentum is building but not overbought.',
-      patternFocus: 'Intraday breakout, gap continuation, momentum burst off support.',
-      atrRole:      'ATR drives both stop AND target. 3–5 day targets are typically 1–2 ATR moves from entry.',
-    },
-    medium: {
-      label:        '1–3 weeks (swing trade)',
-      stopMult:     '1.5 to 2.0× ATR below entry',
-      targetMethod: `First target: prior 20-bar resistance level (if within 3–6× ATR of entry). Second target: measured move = entry + consolidation range (consRange). If no clear resistance, use entry + (3 to 5× ATR) × minRR. Choose whichever is closest but still meets minRR.`,
-      exitStyle:    'Scale out 50% at first target, trail stop on remainder to lock in gains.',
-      rsiGuidance:  'RSI 40–65 acceptable. Avoid if RSI > 75 (overbought for a 1–3 week hold).',
-      patternFocus: 'Base breakout, bull flag, cup handle, pullback to MA support.',
-      atrRole:      'ATR sets the stop; resistance level or measured move sets the target. Both must produce rr >= minRR.',
-    },
-    long: {
-      label:        '4–8 weeks (position swing)',
-      stopMult:     '2.0 to 2.5× ATR below entry, or below 50-day MA if closer',
-      targetMethod: `Primary target: 60-bar swing high (swingHi60) if above entry. Secondary: 52-week high if stock is near a breakout. Fallback: entry + (6 to 10× ATR) × minRR. Target the next major structural level, not just a nearby resistance.`,
-      exitStyle:    'Hold through minor pullbacks. Trail stop below each higher low as trade develops.',
-      rsiGuidance:  'RSI 40–70 acceptable. Prefer entries when RSI is recovering from 40–50.',
-      patternFocus: 'Multi-week base breakout, trend resumption after correction, sector rotation leader.',
-      atrRole:      'ATR sets stop only. Target is driven by chart structure: swing highs, 52w high, or major resistance.',
+function preAnalyse(s, holdPeriod, minRR) {
+  const atr = s.atr14 || 0;
+  const p   = s.price  || 0;
+  if (!p || !atr) return null; // can't score without price/ATR
+
+  // ── Hold-period multipliers ─────────────────────────────────────────────
+  const hp = {
+    short:  { stopMult: 1.25, tgtMultLow: 1.5,  tgtMultHigh: 2.0,  rsiIdealLo: 50, rsiIdealHi: 65 },
+    medium: { stopMult: 1.75, tgtMultLow: 3.0,  tgtMultHigh: 5.0,  rsiIdealLo: 40, rsiIdealHi: 65 },
+    long:   { stopMult: 2.25, tgtMultLow: 6.0,  tgtMultHigh: 10.0, rsiIdealLo: 40, rsiIdealHi: 70 },
+  }[holdPeriod] || { stopMult: 1.75, tgtMultLow: 3.0, tgtMultHigh: 5.0, rsiIdealLo: 40, rsiIdealHi: 65 };
+
+  // ── Layer 1: Setup quality (0–100) ──────────────────────────────────────
+  let l1 = 50;
+  // Trend bonus/penalty
+  if (s.trend === 'strong uptrend') l1 += 25;
+  else if (s.trend === 'uptrend')   l1 += 15;
+  else if (s.trend === 'mixed')     l1 -= 5;
+  else if (s.trend === 'downtrend') l1 -= 25;
+  // MA alignment
+  if (s.ma50  && p > s.ma50)  l1 += 8;
+  else if (s.ma50)             l1 -= 8;
+  if (s.ma200 && p > s.ma200) l1 += 7;
+  else if (s.ma200)            l1 -= 7;
+  // 52w range position (closer to high = more setup quality)
+  if (s.wk52Hi && s.wk52Lo) {
+    const rangePct = (p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo);
+    if (rangePct > 0.75) l1 += 8;       // near 52w high — breakout candidate
+    else if (rangePct > 0.5) l1 += 3;
+    else if (rangePct < 0.25) l1 -= 10; // near 52w low — avoid
+  }
+  l1 = clamp(l1, 0, 100);
+
+  // ── Layer 2: Technical confirmation (0–100) ─────────────────────────────
+  let l2 = 50;
+  // RSI
+  const rsi = s.rsi14;
+  if (rsi != null) {
+    if (rsi >= hp.rsiIdealLo && rsi <= hp.rsiIdealHi) l2 += 20; // ideal zone
+    else if (rsi > hp.rsiIdealHi && rsi <= 75)        l2 += 5;  // mildly stretched
+    else if (rsi > 75)                                 l2 -= 20; // overbought
+    else if (rsi < 30)                                 l2 -= 15; // oversold
+    else if (rsi < hp.rsiIdealLo)                      l2 -= 5;  // weak
+  }
+  // MACD direction
+  if (s.macd != null) {
+    if (s.macd > 0)  l2 += 12;
+    else              l2 -= 12;
+  }
+  // Volume confirmation
+  if (s.volRatio != null) {
+    if (s.volRatio >= 1.5)       l2 += 15; // strong volume
+    else if (s.volRatio >= 1.0)  l2 += 5;
+    else if (s.volRatio < 0.7)   l2 -= 10; // weak volume
+  }
+  // Price vs prior resistance
+  if (s.priorResistance && p > 0) {
+    const distPct = (s.priorResistance - p) / p * 100;
+    if (distPct > 0 && distPct < 5)  l2 += 8;  // approaching resistance
+    else if (distPct <= 0)            l2 += 15; // broke through resistance
+    else if (distPct > 15)            l2 -= 5;  // far from resistance
+  }
+  l2 = clamp(l2, 0, 100);
+
+  // ── Layer 3: Fundamental context (0–100) ────────────────────────────────
+  // Limited without earnings data — scored from sector + market cap proxy
+  let l3 = 55; // neutral default — Claude will enrich this
+  if (s.marketCap) {
+    const mc = parseFloat(s.marketCap);
+    if (mc > 100)      l3 += 10; // mega-cap, liquid
+    else if (mc > 10)  l3 += 5;  // large-cap
+    else if (mc < 1)   l3 -= 10; // micro-cap, risky
+  }
+  l3 = clamp(l3, 0, 100);
+
+  // ── Layer 4: Risk parameters (0–100) ────────────────────────────────────
+  let l4 = 50;
+  // ATR as % of price — want 1–5% for a reasonable stop
+  if (p > 0) {
+    const atrPct = (atr / p) * 100;
+    if (atrPct >= 1 && atrPct <= 5)  l4 += 25; // ideal risk range
+    else if (atrPct > 5 && atrPct <= 8) l4 += 10;
+    else if (atrPct > 8)              l4 -= 15; // too volatile
+    else if (atrPct < 0.5)            l4 -= 10; // too tight, won't move
+  }
+  // Support cushion below price
+  if (s.priorSupport && p > 0) {
+    const supPct = (p - s.priorSupport) / p * 100;
+    if (supPct <= 5)  l4 += 15; // tight support just below
+    else if (supPct <= 10) l4 += 5;
+    else               l4 -= 5; // support far away
+  }
+  l4 = clamp(l4, 0, 100);
+
+  // ── Compute entry / stop / target prices ────────────────────────────────
+  // Entry: current price (or use consHigh if consolidating as breakout level)
+  let entry = p;
+  if (s.consHigh && s.consHigh > p && ((s.consHigh - p) / p) < 0.03) {
+    entry = +s.consHigh.toFixed(2); // breakout entry just above consolidation
+  }
+
+  // Stop: entry minus (hp.stopMult × ATR), but floor at prior support if tighter
+  let stop = +(entry - hp.stopMult * atr).toFixed(2);
+  if (s.priorSupport && s.priorSupport > stop && s.priorSupport < entry) {
+    stop = +(s.priorSupport - atr * 0.25).toFixed(2); // just below support
+  }
+  const stopDist = entry - stop;
+  if (stopDist <= 0) return null; // degenerate case
+
+  // Target: attempt to anchor to chart levels, fall back to ATR multiples
+  let target = null;
+  let targetBasis = '';
+
+  if (holdPeriod === 'short') {
+    // Short: ATR-based only
+    target = +(entry + stopDist * Math.max(minRR, 1.5)).toFixed(2);
+    targetBasis = `ATR extension ×${Math.max(minRR, 1.5).toFixed(1)}`;
+  } else if (holdPeriod === 'medium') {
+    // Medium: prefer prior resistance, then measured move, then ATR
+    if (s.priorResistance && s.priorResistance > entry) {
+      const rrFromRes = (s.priorResistance - entry) / stopDist;
+      if (rrFromRes >= minRR) {
+        target = +(s.priorResistance * 0.995).toFixed(2); // just below resistance
+        targetBasis = `prior resistance $${s.priorResistance}`;
+      }
     }
+    if (!target && s.consRange) {
+      const mmTarget = entry + s.consRange;
+      const rrFromMM = (mmTarget - entry) / stopDist;
+      if (rrFromMM >= minRR) {
+        target = +mmTarget.toFixed(2);
+        targetBasis = `measured move +$${s.consRange}`;
+      }
+    }
+    if (!target) {
+      const mult = (hp.tgtMultLow + hp.tgtMultHigh) / 2;
+      target = +(entry + stopDist * Math.max(minRR, mult / hp.stopMult)).toFixed(2);
+      targetBasis = `ATR extension ×${(Math.max(minRR, mult / hp.stopMult)).toFixed(1)}`;
+    }
+  } else {
+    // Long: prefer swing high, then 52w high, then ATR
+    if (s.swingHi60 && s.swingHi60 > entry) {
+      const rrFromSwing = (s.swingHi60 - entry) / stopDist;
+      if (rrFromSwing >= minRR) {
+        target = +(s.swingHi60 * 0.99).toFixed(2);
+        targetBasis = `60-bar swing high $${s.swingHi60}`;
+      }
+    }
+    if (!target && s.wk52Hi && s.wk52Hi > entry) {
+      const rrFrom52 = (s.wk52Hi - entry) / stopDist;
+      if (rrFrom52 >= minRR) {
+        target = +(s.wk52Hi * 0.99).toFixed(2);
+        targetBasis = `52w high $${s.wk52Hi}`;
+      }
+    }
+    if (!target) {
+      const mult = (hp.tgtMultLow + hp.tgtMultHigh) / 2;
+      target = +(entry + stopDist * Math.max(minRR, mult / hp.stopMult)).toFixed(2);
+      targetBasis = `ATR extension ×${(Math.max(minRR, mult / hp.stopMult)).toFixed(1)}`;
+    }
+  }
+
+  const actualRR = +((target - entry) / stopDist).toFixed(2);
+  const upside   = `+${((target - entry) / entry * 100).toFixed(1)}%`;
+  const stopPct  = `-${((entry - stop)  / entry * 100).toFixed(1)}%`;
+
+  // ── Layer 5: Entry/exit plan (0–100) ────────────────────────────────────
+  let l5 = 50;
+  if (actualRR >= 3)           l5 += 30;
+  else if (actualRR >= minRR)  l5 += 20;
+  else if (actualRR < minRR)   l5 -= 20;
+  if (targetBasis.includes('resistance') || targetBasis.includes('swing') || targetBasis.includes('52w')) {
+    l5 += 15; // chart-anchored target is more reliable
+  }
+  if (s.consRange && s.consRange > 0) l5 += 5; // clean consolidation range available
+  l5 = clamp(l5, 0, 100);
+
+  // ── Overall score — weighted average ────────────────────────────────────
+  const overallScore = Math.round(
+    l1 * 0.25 + // setup quality
+    l2 * 0.30 + // technicals (most weight — data is richest here)
+    l3 * 0.15 + // fundamental (least data, less weight)
+    l4 * 0.15 + // risk parameters
+    l5 * 0.15   // entry/exit plan
+  );
+
+  // ── Verdict ─────────────────────────────────────────────────────────────
+  let verdict = 'avoid';
+  if (overallScore >= 65 && actualRR >= minRR) verdict = 'buy';
+  else if (overallScore >= 45 || actualRR >= minRR) verdict = 'watch';
+
+  return {
+    entry, stop, target, targetBasis,
+    stopDist, actualRR, upside, stopPct,
+    scores: {
+      setup: l1, technical: l2, fundamental: l3,
+      risk: l4, plan: l5, overall: overallScore
+    },
+    verdict
   };
+}
 
-  const rules = holdRules[holdPeriod] || holdRules.medium;
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
-  const stockSummaries = stocks.map(s => {
-    const aboveMa50  = s.ma50  ? (s.price > s.ma50  ? 'yes' : 'no') : 'n/a';
-    const aboveMa200 = s.ma200 ? (s.price > s.ma200 ? 'yes' : 'no') : 'n/a';
-    const volStr     = s.volRatio ? `${s.volRatio}x 20d avg` : 'n/a';
-    const wk52str    = s.wk52Hi ? `${s.wk52Lo} - ${s.wk52Hi}` : 'n/a';
-    return `
-TICKER: ${s.ticker}
-Company: ${s.companyName} | Sector: ${s.sector || 'n/a'} | Market cap: ${s.marketCap || 'n/a'}
 
-LIVE PRICE DATA:
-- Price: ${s.price} (source: ${s.priceSource})
-- Prev close: ${s.prevClose}
-- Day change: ${s.changePct != null ? s.changePct + '%' : 'n/a'}
-- Today volume: ${s.volume ? s.volume.toLocaleString() : 'n/a'} (${volStr})
-- 52-week range: ${wk52str}
+// ── Build AI prompt ───────────────────────────────────────────────────────────
+// Pre-analysis engine handles all math. Claude only writes narrative notes.
+function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
+  const holdLabel = { short: '3–5 days', medium: '1–3 weeks', long: '4–8 weeks' }[holdPeriod] || holdPeriod;
 
-TECHNICALS:
-- RSI(14): ${s.rsi14 ?? 'n/a'}
-- MACD line: ${s.macd ?? 'n/a'}
-- MA20: ${s.ma20 ?? 'n/a'} | MA50: ${s.ma50 ?? 'n/a'} (above: ${aboveMa50}) | MA200: ${s.ma200 ?? 'n/a'} (above: ${aboveMa200})
-- ATR(14): ${s.atr14 ?? 'n/a'}
-- Trend: ${s.trend}
-- Last 10 closes: ${s.closes.slice(-10).join(', ')}
+  const stockLines = stocks.map(s => {
+    const pa = preAnalyse(s, holdPeriod, parseFloat(minRR));
+    if (!pa) return `TICKER: ${s.ticker} | STATUS: no price data — skip`;
+    return [
+      `TICKER: ${s.ticker} | ${s.companyName} | ${s.sector||'n/a'} | MCap: ${s.marketCap||'n/a'}`,
+      `SCORES (fixed): verdict=${pa.verdict} overall=${pa.scores.overall} rr=${pa.actualRR}`,
+      `  Setup=${pa.scores.setup} Technical=${pa.scores.technical} Fundamental=${pa.scores.fundamental} Risk=${pa.scores.risk} Plan=${pa.scores.plan}`,
+      `PRICES (fixed): entry=$${pa.entry} target=$${pa.target}(${pa.upside},${pa.targetBasis}) stop=$${pa.stop}(${pa.stopPct})`,
+      `CONTEXT: price=$${s.price}(${s.priceSource}) RSI=${s.rsi14??'n/a'} MACD=${s.macd??'n/a'} ATR=$${s.atr14??'n/a'} trend=${s.trend}`,
+      `  MA50=$${s.ma50??'n/a'} MA200=$${s.ma200??'n/a'} resist=$${s.priorResistance??'n/a'} support=$${s.priorSupport??'n/a'} vol=${s.volRatio??'n/a'}x`,
+    ].join('\n');
+  }).join('\n---\n');
 
-CHART STRUCTURE (computed from Polygon bars — use these to anchor targets):
-- Prior resistance (20-bar high, ex last 3 bars): ${s.priorResistance ?? 'n/a'}
-- Prior support (20-bar low, ex last 3 bars): ${s.priorSupport ?? 'n/a'}
-- Recent consolidation high (last 10 bars): ${s.consHigh ?? 'n/a'}
-- Recent consolidation low (last 10 bars): ${s.consLow ?? 'n/a'}
-- Consolidation range (consRange = consHigh - consLow): ${s.consRange ?? 'n/a'}
-- 60-bar swing high: ${s.swingHi60 ?? 'n/a'}
-- 60-bar swing low: ${s.swingLo60 ?? 'n/a'}`.trim();
-  }).join('\n\n---\n\n');
+  return `Write short swing trade notes. ALL numbers are pre-calculated — copy them exactly, do not change any scores or prices.
 
-  return `You are an expert swing trade analyst. Use ONLY the real Polygon.io data below — do not invent prices or technicals.
+Hold=${holdLabel} | Risk=${riskPct}% | Regime=${regime}
 
-TRADE PARAMETERS:
-- Hold period: ${rules.label}
-- Risk per trade: ${riskPct}% of capital
-- Minimum reward:risk required: ${minRR}:1
-- Market regime: ${regime}
+${stockLines}
 
-HOLD-PERIOD RULES FOR THIS ANALYSIS (${rules.label}):
-- Stop placement: ${rules.stopMult}
-- Target method: ${rules.targetMethod}
-- Exit style: ${rules.exitStyle}
-- RSI guidance: ${rules.rsiGuidance}
-- Pattern focus: ${rules.patternFocus}
-- ATR role: ${rules.atrRole}
-
-LIVE STOCK DATA:
-${stockSummaries}
-
-TASK:
-For each stock apply the 5-layer framework:
-1. Setup quality: pattern (use last 10 closes + chart structure), trend (MAs), RS, regime fit
-2. Technical confirmation: RSI, MACD, volume, support/resistance from chart structure above
-3. Fundamental context: sector momentum, company quality, macro fit
-4. Risk parameters: stop per hold-period rules above, rr calculation, liquidity
-5. Entry/exit plan: specific entry trigger, target anchored to chart levels per hold-period rules, stop
-
-PRICING RULES — follow exactly for ${rules.label}:
-- Entry: current price or specific breakout/pullback trigger
-- Stop: ${rules.stopMult}
-- Target: ${rules.targetMethod}
-- Verify: (targetPrice - entryPrice) / (entryPrice - stopPrice) >= ${minRR}
-- If target derived from resistance is too close to meet minRR, fall back to ATR-based target
-
-Return ONLY a valid JSON array — no text outside it, no markdown fences, no comments.
-Keep ALL string fields under 12 words to minimise tokens.
-Schema (one object per ticker):
-{"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"buy","overallScore":0,"rr":"0.0","upside":"+0.0%","stopPct":"-0.0%","targetBasis":"","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","wk52":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
-
-Note: "targetBasis" should be a short label for how the target was set, e.g. "prior resistance $X", "measured move $X", "ATR extension", "swing high $X", "52w high $X".
-
-Verdict rules: buy = overallScore >= 65 AND rr >= ${minRR}. watch = overallScore 45-64 OR rr < ${minRR}. avoid = overallScore < 45 or setup broken.`;
+Return ONLY a JSON array. No markdown. Copy all numbers exactly from SCORES and PRICES above.
+Schema: {"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"","overallScore":0,"rr":"0.0","upside":"","stopPct":"","targetBasis":"","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
+Notes max 10 words each. entryNote/exitNote/stopNote max 15 words each.`;
 }
 
 // ── Robust JSON parser ────────────────────────────────────────────────────────
@@ -1077,10 +1206,31 @@ async function runAnalysis() {
         if (!batchResults || batchResults.length === 0) {
           dbg(`Batch ${b+1}: parse failed — ${rawText.slice(0,150)}`, 'error');
         } else {
-          // Attach live Polygon data
+          // Merge: pre-analysis numbers override anything Claude may have changed
           batchResults.forEach(r => {
             const live = batches[b].find(s => s.ticker === r.ticker);
-            if (live) { r._live = live; r.currentPrice = live.price || r.currentPrice; }
+            if (live) {
+              r._live = live;
+              r.currentPrice = live.price || r.currentPrice;
+              // Re-apply pre-analysis numbers to guarantee accuracy
+              const pa = preAnalyse(live, holdPeriod, parseFloat(minRR));
+              if (pa) {
+                r.entryPrice   = pa.entry;
+                r.targetPrice  = pa.target;
+                r.stopPrice    = pa.stop;
+                r.overallScore = pa.scores.overall;
+                r.rr           = String(pa.actualRR);
+                r.upside       = pa.upside;
+                r.stopPct      = pa.stopPct;
+                r.targetBasis  = pa.targetBasis;
+                r.verdict      = pa.verdict;
+                // Keep layer scores from pre-analysis, notes from Claude
+                if (r.layers && pa.scores) {
+                  const scoreMap = [pa.scores.setup, pa.scores.technical, pa.scores.fundamental, pa.scores.risk, pa.scores.plan];
+                  r.layers.forEach((l, i) => { l.score = scoreMap[i] ?? l.score; });
+                }
+              }
+            }
           });
           allResults = [...allResults, ...batchResults];
           dbg(`Batch ${b+1}: parsed ${batchResults.length} results — total so far: ${allResults.length}`, 'ok');
