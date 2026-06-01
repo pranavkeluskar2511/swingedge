@@ -88,7 +88,11 @@ header{display:flex;align-items:flex-end;justify-content:space-between;margin-bo
 .sum-val{font-family:var(--display);font-size:20px;font-weight:700}
 
 /* ── Global result tabs ─────────────────────────────────────────── */
-.results-tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:20px}
+.results-tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:20px;align-items:center}
+.dl-btn-group{display:flex;align-items:center;gap:6px;padding-bottom:2px}
+.dl-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.dl-btn{background:var(--surface2);border:1px solid var(--border2);border-radius:6px;color:var(--muted);font-family:var(--mono);font-size:11px;padding:4px 10px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap}
+.dl-btn:hover{border-color:var(--accent);color:var(--accent)}
 .results-tab{padding:10px 26px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:color .15s,border-color .15s;user-select:none}
 .results-tab:hover{color:var(--text)}
 .results-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
@@ -1344,6 +1348,16 @@ function renderResults(results) {
     <div class="results-tabs">
       <div class="results-tab active" id="rtab-1" onclick="switchView(1)">Trade table</div>
       <div class="results-tab"        id="rtab-2" onclick="switchView(2)">Full analysis</div>
+      <div style="flex:1"></div>
+      <div class="dl-btn-group">
+        <span class="dl-label">Download:</span>
+        <button class="dl-btn" onclick="exportData('xlsx')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>XLSX
+        </button>
+        <button class="dl-btn" onclick="exportData('csv')">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>CSV
+        </button>
+      </div>
     </div>
     <div class="results-view active" id="rview-1">${view1}</div>
     <div class="results-view"        id="rview-2">${view2}</div>`;
@@ -1362,7 +1376,6 @@ function switchView(n) {
     document.getElementById(`rtab-${t}`).classList.toggle('active', t===n);
     document.getElementById(`rview-${t}`).classList.toggle('active', t===n);
   });
-  // Animate layer bars when analysis view opens
   if (n === 2) {
     setTimeout(() => {
       document.querySelectorAll('#rview-2 .layer-bar[data-w]').forEach(b => {
@@ -1370,6 +1383,153 @@ function switchView(n) {
       });
     }, 60);
   }
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+function exportData(format) {
+  if (!_lastResults || _lastResults.length === 0) {
+    alert('No results to export yet — run an analysis first.');
+    return;
+  }
+
+  const ts = new Date().toISOString().slice(0,10);
+  const filename = `swingedge-${ts}`;
+
+  // ── Sheet 1: Trade Table ──────────────────────────────────────────
+  const tradeHeaders = [
+    'Ticker', 'Company', 'Signal', 'Score', 'R:R',
+    'Current Price', 'Price Source',
+    'Entry Price', 'Target Price', 'Upside %',
+    'Stop Price', 'Stop %',
+    'Entry Note', 'Exit Note', 'Stop Note'
+  ];
+
+  const tradeRows = _lastResults.map(r => {
+    const live = r._live || {};
+    return [
+      r.ticker,
+      r.companyName || '',
+      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : 'AVOID',
+      r.overallScore || '',
+      r.rr || '',
+      r.currentPrice || '',
+      live.priceSource || '',
+      r.entryPrice || '',
+      r.targetPrice || '',
+      r.upside ? r.upside.replace('+','') : '',
+      r.stopPrice || '',
+      r.stopPct ? r.stopPct.replace('-','') : '',
+      r.entryNote || '',
+      r.exitNote  || '',
+      r.stopNote  || ''
+    ];
+  });
+
+  // ── Sheet 2: Full Analysis ────────────────────────────────────────
+  const analysisHeaders = [
+    'Ticker', 'Company', 'Signal', 'Score', 'R:R',
+    'Current Price', 'Price Source', 'Day Change %',
+    'Entry', 'Target', 'Stop',
+    'RSI (14)', 'MACD', 'MA 20', 'MA 50', 'MA 200', 'ATR (14)',
+    'Trend', 'Pattern', 'Sector', 'Market Cap',
+    'Volume', 'Volume vs Avg', '52w Low', '52w High',
+    'Layer 1 – Setup quality (score)', 'Layer 1 note',
+    'Layer 2 – Tech confirmation (score)', 'Layer 2 note',
+    'Layer 3 – Fundamental (score)', 'Layer 3 note',
+    'Layer 4 – Risk parameters (score)', 'Layer 4 note',
+    'Layer 5 – Entry/exit plan (score)', 'Layer 5 note',
+    'Entry trigger', 'Exit plan', 'Stop logic'
+  ];
+
+  const analysisRows = _lastResults.map(r => {
+    const live = r._live || {};
+    const kd   = r.keyDetails || {};
+    const layers = r.layers || [];
+    const lv = n => layers[n]?.score ?? '';
+    const ln = n => layers[n]?.note  ?? '';
+    return [
+      r.ticker,
+      r.companyName || '',
+      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : 'AVOID',
+      r.overallScore || '',
+      r.rr || '',
+      r.currentPrice || '',
+      live.priceSource || '',
+      live.changePct != null ? live.changePct : '',
+      r.entryPrice  || '',
+      r.targetPrice || '',
+      r.stopPrice   || '',
+      live.rsi14  != null ? live.rsi14  : (kd.rsi  || ''),
+      live.macd   != null ? live.macd   : (kd.macd || ''),
+      live.ma20   != null ? live.ma20   : '',
+      live.ma50   != null ? live.ma50   : '',
+      live.ma200  != null ? live.ma200  : '',
+      live.atr14  != null ? live.atr14  : (kd.atr  || ''),
+      live.trend  || kd.trend   || '',
+      kd.pattern  || '',
+      live.sector || kd.sector  || '',
+      live.marketCap || '',
+      live.volume    || '',
+      live.volRatio  != null ? live.volRatio + 'x' : '',
+      live.wk52Lo    || '',
+      live.wk52Hi    || '',
+      lv(0), ln(0), lv(1), ln(1), lv(2), ln(2),
+      lv(3), ln(3), lv(4), ln(4),
+      r.entryNote || '',
+      r.exitNote  || '',
+      r.stopNote  || ''
+    ];
+  });
+
+  if (format === 'csv') {
+    // Export two CSV files
+    downloadCSV([tradeHeaders, ...tradeRows],   `${filename}-trade-table.csv`);
+    downloadCSV([analysisHeaders, ...analysisRows], `${filename}-full-analysis.csv`);
+    dbg(`✓ Exported 2 CSV files (${_lastResults.length} stocks)`, 'ok');
+  } else {
+    // Export single XLSX with two sheets
+    if (typeof XLSX === 'undefined') {
+      alert('SheetJS not loaded yet — wait a moment and try again.');
+      return;
+    }
+    const wb = XLSX.utils.book_new();
+
+    const ws1 = XLSX.utils.aoa_to_sheet([tradeHeaders, ...tradeRows]);
+    styleXLSXSheet(ws1, tradeHeaders.length, tradeRows.length);
+    XLSX.utils.book_append_sheet(wb, ws1, 'Trade Table');
+
+    const ws2 = XLSX.utils.aoa_to_sheet([analysisHeaders, ...analysisRows]);
+    styleXLSXSheet(ws2, analysisHeaders.length, analysisRows.length);
+    XLSX.utils.book_append_sheet(wb, ws2, 'Full Analysis');
+
+    XLSX.writeFile(wb, `${filename}.xlsx`);
+    dbg(`✓ Exported XLSX with 2 sheets (${_lastResults.length} stocks)`, 'ok');
+  }
+}
+
+function styleXLSXSheet(ws, numCols, numRows) {
+  // Set column widths
+  ws['!cols'] = Array.from({length: numCols}, (_, i) => ({
+    wch: i === 0 ? 8 : i === 1 ? 22 : i <= 4 ? 10 : i <= 12 ? 14 : 30
+  }));
+  // Freeze header row
+  ws['!freeze'] = { xSplit: 0, ySplit: 1, topLeftCell: 'A2', activePane: 'bottomLeft' };
+}
+
+function downloadCSV(rows, filename) {
+  const escape = v => {
+    const s = String(v ?? '');
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"`
+      : s;
+  };
+  const csv = rows.map(row => row.map(escape).join(',')).join('\r\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 // ── Spark chart ───────────────────────────────────────────────────────────────
