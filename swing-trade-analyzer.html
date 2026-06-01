@@ -756,58 +756,58 @@ async function fetchTickerData(ticker) {
   const barsYearRes = await polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from365}/${today}?adjusted=true&sort=asc&limit=400`).catch(() => ({ results: [] }));
   const barsYear = barsYearRes.results || [];
 
-  const closes = bars.map(b => b.c);
-  const vols   = bars.map(b => b.v);
+  const closes    = bars.map(b => b.c);       // 90-day closes
+  const closesLong = barsYear.map(b => b.c);  // 365-day closes — for MA200 + 52w
+  const vols      = bars.map(b => b.v);
 
   // Current price — try live snapshot first, fall back to last daily bar close
   const lastBar = bars[bars.length - 1] || {};
   const prevBar = bars[bars.length - 2] || {};
 
-  const livePrice = snap?.day?.c || snap?.lastTrade?.p || null;
+  const livePrice      = snap?.day?.c || snap?.lastTrade?.p || null;
   const lastClosePrice = lastBar.c || snap?.prevDay?.c || null;
 
   const price = livePrice || lastClosePrice || 0;
-  // Flag whether we're showing live intraday price or just the last session close
-  const priceIsLive   = !!livePrice;
-  const priceIsClose  = !livePrice && !!lastClosePrice;
-  const priceSource   = livePrice ? 'live'
+  const priceIsLive  = !!livePrice;
+  const priceIsClose = !livePrice && !!lastClosePrice;
+  const priceSource  = livePrice ? 'live'
     : lastClosePrice ? `last close ${prevTradingDay(1)}`
     : 'unavailable';
 
   const prevClose = prevBar.c || snap?.prevDay?.c || price;
-  // Only show day change if we have a live price; last-close vs prev-close change is misleading
   const changePct = (priceIsLive && prevClose && price)
     ? +((price - prevClose) / prevClose * 100).toFixed(2)
     : null;
 
-  // Volume: only meaningful for live session
   const volume   = priceIsLive ? (snap?.day?.v || lastBar.v || 0) : 0;
   const avgVol20 = vols.length >= 20
     ? Math.round(vols.slice(-20).reduce((a,b) => a+b, 0) / 20)
     : null;
 
-  // Technicals
+  // Technicals — MA50 from 90-day bars, MA200 from 365-day bars
   const rsi14 = calcRSI(closes);
   const macd  = calcMACD(closes);
   const ma20  = sma(closes, 20);
   const ma50  = sma(closes, 50);
-  const ma200 = sma(closes, 200);
+  const ma200 = sma(closesLong, 200);   // needs 365-day data
   const atr14 = calcATR(bars);
 
-  // 52-week range
+  // 52-week range — must use 365-day bars so current price never exceeds it
   const wk52Hi = barsYear.length ? +Math.max(...barsYear.map(b => b.h)).toFixed(2) : null;
   const wk52Lo = barsYear.length ? +Math.min(...barsYear.map(b => b.l)).toFixed(2) : null;
 
-  // Volume ratio
   const volRatio = avgVol20 && volume ? +(volume / avgVol20).toFixed(2) : null;
 
-  // Trend assessment
+  // Trend — now reliable because MA200 uses 365-day data
   let trend = 'unknown';
   if (ma50 && ma200) {
     if (price > ma50 && price > ma200 && ma50 > ma200) trend = 'strong uptrend';
-    else if (price > ma50 && price > ma200) trend = 'uptrend';
-    else if (price < ma50 && price < ma200) trend = 'downtrend';
-    else trend = 'mixed';
+    else if (price > ma50 && price > ma200)             trend = 'uptrend';
+    else if (price < ma50 && price < ma200)             trend = 'downtrend';
+    else                                                 trend = 'mixed';
+  } else if (ma50) {
+    // Fallback: use MA50 only when MA200 unavailable
+    trend = price > ma50 ? 'uptrend' : 'downtrend';
   }
 
   // Company info
@@ -1085,39 +1085,22 @@ function generateNotes(s, pa) {
 
   // Layer 1: Setup quality
   const trendMap = {
-    'strong uptrend': 'Strong uptrend above 50 & 200MA',
-    'uptrend':        'Uptrend above both MAs',
-    'mixed':          'Mixed — MAs conflicting',
-    'downtrend':      'Downtrend below both MAs',
+    'strong uptrend': 'Strong uptrend — above 50 & 200MA',
+    'uptrend':        'Uptrend — above both MAs',
+    'mixed':          'Mixed — price between MAs',
+    'downtrend':      'Downtrend — below both MAs',
     'unknown':        'Trend unknown — MA data limited',
   };
+  const trendNote = trendMap[s.trend] || trendMap['unknown'];
 
-  // Derive trend directly from the raw MA values as a fallback
-  // (in case s.trend is undefined or empty)
-  let trendKey = (s.trend || '').toLowerCase().trim();
-  if (!trendMap[trendKey]) {
-    // Re-derive from MA data
-    const p2 = s.price || 0;
-    if (s.ma50 && s.ma200) {
-      if (p2 > s.ma50 && p2 > s.ma200 && s.ma50 > s.ma200) trendKey = 'strong uptrend';
-      else if (p2 > s.ma50 && p2 > s.ma200)                 trendKey = 'uptrend';
-      else if (p2 < s.ma50 && p2 < s.ma200)                 trendKey = 'downtrend';
-      else                                                    trendKey = 'mixed';
-    } else if (s.ma50) {
-      trendKey = p2 > s.ma50 ? 'uptrend' : 'downtrend';
-    } else {
-      trendKey = 'unknown';
-    }
-  }
-  const trendNote = trendMap[trendKey] || `Trend: ${trendKey}`;
-
-  // 52-week range position
+  // 52-week range position — clamped to 0–100% since we now use 365-day bars
   let rangeNote = '';
   if (s.wk52Hi && s.wk52Lo && s.wk52Hi > s.wk52Lo) {
-    const rangePct = Math.round((p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo) * 100);
-    if (rangePct > 75)      rangeNote = ` — near 52w high (${rangePct}%)`;
-    else if (rangePct < 25) rangeNote = ` — near 52w low (${rangePct}%)`;
-    else                    rangeNote = ` — mid 52w range (${rangePct}%)`;
+    const rawPct  = (p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo) * 100;
+    const rangePct = Math.round(Math.min(100, Math.max(0, rawPct)));
+    if (rangePct >= 80)      rangeNote = ` — near 52w high (${rangePct}%)`;
+    else if (rangePct <= 20) rangeNote = ` — near 52w low (${rangePct}%)`;
+    else                     rangeNote = ` — mid 52w range (${rangePct}%)`;
   }
 
   const l1note = trendNote + rangeNote;
