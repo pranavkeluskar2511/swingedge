@@ -1,0 +1,1330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SwingEdge — Live Swing Trade Analyzer</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#0a0c0f; --surface:#111418; --surface2:#181d23;
+  --border:#1e2530; --border2:#2a3340;
+  --text:#e8edf2; --muted:#6b7a8d; --dim:#3a4555;
+  --accent:#00d4aa; --accent2:#0099ff;
+  --bull:#00d4aa; --bear:#ff4d6a; --warn:#f5a623;
+  --mono:'DM Mono',monospace; --display:'Syne',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--mono);font-size:13px;min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;background-image:linear-gradient(rgba(0,212,170,.03) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,170,.03) 1px,transparent 1px);background-size:40px 40px;pointer-events:none;z-index:0}
+
+.app{position:relative;z-index:1;max-width:1120px;margin:0 auto;padding:28px 20px 80px}
+
+/* Header */
+header{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:32px;border-bottom:1px solid var(--border);padding-bottom:20px}
+.logo{font-family:var(--display);font-size:26px;font-weight:800;letter-spacing:-.5px}
+.logo span{color:var(--accent)}
+.tagline{font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase;margin-top:3px}
+.header-right{text-align:right;font-size:11px;color:var(--muted)}
+.live-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-right:5px;animation:pulse 2s ease-in-out infinite;vertical-align:middle}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+
+/* API keys panel */
+.keys-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px 22px;margin-bottom:16px}
+.keys-row{display:flex;gap:12px;flex-wrap:wrap}
+.key-group{flex:1;min-width:200px;display:flex;flex-direction:column;gap:5px}
+.key-group label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.key-group input{background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:12px;padding:7px 10px;outline:none;transition:border-color .2s;width:100%}
+.key-group input:focus{border-color:var(--accent)}
+.key-group input::placeholder{color:var(--dim)}
+.key-saved{font-size:10px;color:var(--accent);margin-top:3px;display:none}
+
+/* Input panel */
+.input-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:20px 22px;margin-bottom:24px}
+.panel-label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:10px}
+.input-row{display:flex;gap:10px;flex-wrap:wrap}
+.ticker-wrap{flex:1;min-width:200px}
+.ticker-wrap input{width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:7px;color:var(--text);font-family:var(--mono);font-size:14px;padding:9px 12px;outline:none;transition:border-color .2s;text-transform:uppercase}
+.ticker-wrap input::placeholder{color:var(--dim);text-transform:none}
+.ticker-wrap input:focus{border-color:var(--accent)}
+.ticker-tags{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.ticker-tag{background:var(--surface2);border:1px solid var(--border2);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:500;letter-spacing:.05em;display:flex;align-items:center;gap:5px;transition:border-color .2s}
+.ticker-tag:hover{border-color:var(--accent)}
+.ticker-tag .rm{color:var(--muted);cursor:pointer;font-size:13px;line-height:1}
+.ticker-tag .rm:hover{color:var(--bear)}
+
+.params-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px}
+.param-group{display:flex;flex-direction:column;gap:5px;min-width:130px}
+.param-group label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.param-group select{background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px;padding:6px 9px;outline:none;transition:border-color .2s}
+.param-group select:focus{border-color:var(--accent)}
+
+.analyze-btn{background:var(--accent);color:#000;border:none;border-radius:7px;font-family:var(--display);font-size:13px;font-weight:700;letter-spacing:.04em;padding:9px 26px;cursor:pointer;transition:transform .15s,box-shadow .15s,background .15s;white-space:nowrap;align-self:flex-end}
+.analyze-btn:hover{background:#00f0c0;transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,212,170,.3)}
+.analyze-btn:active{transform:translateY(0)}
+.analyze-btn:disabled{background:var(--dim);color:var(--muted);cursor:not-allowed;transform:none;box-shadow:none}
+
+/* Excel upload button */
+#xlUploadLabel{cursor:pointer;align-self:flex-end}
+.xl-btn{display:inline-block;background:var(--surface2);border:1px solid var(--border2);border-radius:7px;color:var(--muted);font-family:var(--mono);font-size:12px;padding:9px 16px;cursor:pointer;transition:border-color .15s,color .15s;white-space:nowrap}
+.xl-btn:hover{border-color:var(--accent);color:var(--accent)}
+
+/* Progress */
+.progress-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:16px 22px;margin-bottom:20px;display:none}
+.progress-panel.active{display:block}
+.progress-title{font-size:11px;color:var(--muted);margin-bottom:10px;letter-spacing:.06em}
+.progress-steps{display:flex;flex-direction:column;gap:5px}
+.prog-step{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--dim);transition:color .3s}
+.prog-step.active{color:var(--text)}
+.prog-step.done{color:var(--accent)}
+.prog-step .dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex-shrink:0;transition:background .3s}
+.prog-step.active .dot{background:var(--warn);animation:pulse 1s ease-in-out infinite}
+.prog-step.done .dot{background:var(--accent)}
+
+/* Summary bar */
+.summary-bar{display:flex;gap:20px;flex-wrap:wrap;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 22px;margin-bottom:20px}
+.sum-item{display:flex;flex-direction:column;gap:2px}
+.sum-label{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.sum-val{font-family:var(--display);font-size:20px;font-weight:700}
+
+/* ── Global result tabs ─────────────────────────────────────────── */
+.results-tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:20px}
+.results-tab{padding:10px 26px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;transition:color .15s,border-color .15s;user-select:none}
+.results-tab:hover{color:var(--text)}
+.results-tab.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+.results-view{display:none}
+.results-view.active{display:block}
+
+/* ── Summary bar ────────────────────────────────────────────────── */
+.summary-bar{display:flex;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:20px}
+.sum-item{flex:1;padding:14px 18px;border-right:1px solid var(--border)}
+.sum-item:last-child{border-right:none}
+.sum-label{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:4px}
+.sum-val{font-family:var(--display);font-size:22px;font-weight:700}
+
+/* ── View 1: Trade table ─────────────────────────────────────────── */
+.trade-table-wrap{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:auto}
+.trade-table{width:100%;border-collapse:collapse;min-width:700px}
+.trade-table thead th{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:10px 16px;border-bottom:1px solid var(--border);text-align:left;background:var(--surface2);font-weight:500;white-space:nowrap}
+.trade-table thead th.th-r{text-align:right}
+.trade-table tbody tr{border-bottom:1px solid var(--border);transition:background .12s}
+.trade-table tbody tr:last-child{border-bottom:none}
+.trade-table tbody tr:hover{background:rgba(255,255,255,.02)}
+.trade-table td{padding:14px 16px;vertical-align:middle}
+.td-r{text-align:right}
+
+.t-ticker{font-family:var(--display);font-size:16px;font-weight:800;letter-spacing:-.3px}
+.t-name{font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
+.t-chg{font-size:10px;margin-top:2px}
+.last-close-badge{color:var(--warn);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.25);border-radius:3px;padding:1px 5px;display:inline-block;font-size:9px;letter-spacing:.04em}
+.verdict-badge{display:inline-block;font-family:var(--display);font-size:9px;font-weight:700;letter-spacing:.08em;padding:3px 9px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
+.verdict-buy{background:rgba(0,212,170,.15);color:var(--bull);border:1px solid rgba(0,212,170,.3)}
+.verdict-watch{background:rgba(245,166,35,.12);color:var(--warn);border:1px solid rgba(245,166,35,.25)}
+.verdict-avoid{background:rgba(255,77,106,.12);color:var(--bear);border:1px solid rgba(255,77,106,.25)}
+.t-price{font-family:var(--display);font-size:14px;font-weight:700}
+.pv-current{color:var(--text)}
+.pv-entry{color:var(--accent2)}
+.pv-target{color:var(--bull)}
+.pv-stop{color:var(--bear)}
+.t-sub{font-size:10px;margin-top:2px;color:var(--muted)}
+.pos{color:var(--bull)} .neg{color:var(--bear)}
+.rr-val{font-family:var(--display);font-size:13px;font-weight:700}
+
+canvas.spark-inline{display:block;width:120px;height:40px}
+
+/* ── View 2: Analysis panels ─────────────────────────────────────── */
+.analysis-wrap{display:flex;flex-direction:column;gap:16px}
+.a-card{background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+.a-card-header{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:20px;padding:16px 20px;border-bottom:1px solid var(--border);background:var(--surface2)}
+.a-left{display:flex;align-items:baseline;gap:10px}
+.a-ticker{font-family:var(--display);font-size:20px;font-weight:800;letter-spacing:-.4px}
+.a-name{font-size:11px;color:var(--muted)}
+.a-prices{display:flex;gap:20px}
+.a-price-cell{text-align:center}
+.a-price-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.a-price-val{font-family:var(--display);font-size:15px;font-weight:700}
+.a-right{text-align:right}
+.a-score-big{font-family:var(--display);font-size:30px;font-weight:800;line-height:1}
+.a-score-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-top:3px}
+.rr-badge{display:inline-flex;align-items:center;background:rgba(0,153,255,.1);border:1px solid rgba(0,153,255,.2);color:var(--accent2);border-radius:3px;padding:2px 8px;font-size:11px;font-weight:500;margin-top:4px}
+
+.a-body{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:0;background:var(--border)}
+.a-col{background:var(--surface);padding:16px 18px}
+.a-col-title{font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+
+.layer-row{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.layer-row:last-child{border-bottom:none}
+.layer-name{font-size:11px;color:var(--muted);width:115px;flex-shrink:0}
+.layer-bar-wrap{flex:1;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
+.layer-bar{height:100%;border-radius:2px;width:0%;transition:width .9s cubic-bezier(.4,0,.2,1)}
+.bar-bull{background:linear-gradient(90deg,var(--bull),#00ffc0)}
+.bar-warn{background:linear-gradient(90deg,var(--warn),#ffd060)}
+.bar-bear{background:linear-gradient(90deg,var(--bear),#ff8fa0)}
+.layer-score-num{font-size:11px;font-weight:500;width:24px;text-align:right;flex-shrink:0}
+.layer-note-txt{font-size:10px;color:var(--dim);width:110px;text-align:right;flex-shrink:0;line-height:1.3}
+
+.kv{display:flex;justify-content:space-between;align-items:flex-start;padding:5px 0;border-bottom:1px solid var(--border);font-size:11px;gap:10px}
+.kv:last-child{border-bottom:none}
+.kv-l{color:var(--muted);flex-shrink:0}
+.kv-r{font-weight:500;text-align:right;line-height:1.4}
+
+.trade-note{font-size:11px;line-height:1.65;padding:9px 12px;border-radius:6px;border-left:2px solid;margin-bottom:8px}
+.trade-note:last-child{margin-bottom:0}
+.note-entry{background:rgba(0,153,255,.06);border-color:var(--accent2)}
+.note-entry .nlabel{color:var(--accent2)}
+.note-exit{background:rgba(0,212,170,.06);border-color:var(--bull)}
+.note-exit .nlabel{color:var(--bull)}
+.note-stop{background:rgba(255,77,106,.06);border-color:var(--bear)}
+.note-stop .nlabel{color:var(--bear)}
+.nlabel{font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;display:block;margin-bottom:4px}
+
+/* Error / empty */
+.empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty-icon{font-size:36px;margin-bottom:14px;opacity:.3}
+.empty-title{font-family:var(--display);font-size:17px;font-weight:600;margin-bottom:7px;color:var(--dim)}
+.empty-sub{font-size:12px;line-height:1.7}
+
+.tag{display:inline-block;font-size:9px;padding:2px 6px;border-radius:3px;font-weight:500;letter-spacing:.04em;vertical-align:middle;margin-left:4px}
+.tag-live{background:rgba(0,212,170,.15);color:var(--bull);border:1px solid rgba(0,212,170,.2)}
+
+@media(max-width:750px){.a-body{grid-template-columns:1fr}.a-card-header{grid-template-columns:1fr;gap:10px}.a-prices{flex-wrap:wrap}.keys-row,.params-row{flex-direction:column}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div>
+      <div class="logo">Swing<span>Edge</span> <span class="tag tag-live">LIVE</span></div>
+      <div class="tagline">Real-time data · 5-layer AI analysis · Polygon.io + Claude</div>
+    </div>
+    <div class="header-right">
+      <div><span class="live-dot"></span>Live market data</div>
+      <div style="margin-top:3px" id="lastUpdated">Enter API keys to begin</div>
+    </div>
+  </header>
+
+  <!-- file:// notice -->
+  <div id="fileBanner" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--warn);line-height:1.9">
+    <strong>⚠ Opened as a local file</strong><br>
+    <strong>Desktop (Chrome/Edge):</strong> Works as-is — direct API calls supported. ✓<br>
+    <strong>Mobile (any browser):</strong> Requires the local server. Steps:<br>
+    &nbsp;1. On your computer, run: <code style="background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px">node server.js</code><br>
+    &nbsp;2. Your terminal will print a <strong>Network URL</strong> like <code>http://192.168.x.x:3000</code><br>
+    &nbsp;3. Open that URL on your phone (must be on same WiFi)<br>
+    &nbsp;4. API keys auto-load from the phone's browser storage
+    <span onclick="document.getElementById('fileBanner').style.display='none'" style="float:right;cursor:pointer;color:var(--muted);margin-left:12px">✕</span>
+  </div>
+  <div class="keys-panel">
+    <div class="panel-label" style="display:flex;align-items:center;justify-content:space-between">
+      <span>API Keys — saved locally in your browser</span>
+      <span id="clearKeysBtn" onclick="clearKeys()" style="font-size:10px;color:var(--dim);cursor:pointer;letter-spacing:.06em;text-transform:uppercase;transition:color .15s" onmouseover="this.style.color='var(--bear)'" onmouseout="this.style.color='var(--dim)'">✕ Clear saved keys</span>
+    </div>
+    <div class="keys-row">
+      <div class="key-group">
+        <label>Polygon.io API Key</label>
+        <input type="password" id="polygonKey" placeholder="Your Polygon API key…">
+        <div class="key-saved" id="polyCheck">✓ Saved to browser storage</div>
+      </div>
+      <div class="key-group">
+        <label>Anthropic API Key</label>
+        <input type="password" id="anthropicKey" placeholder="sk-ant-…">
+        <div class="key-saved" id="anthCheck">✓ Saved to browser storage</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tickers + params -->
+  <div class="input-panel">
+    <div class="panel-label">Stocks to analyze</div>
+    <div class="input-row">
+      <div class="ticker-wrap">
+        <input type="text" id="tickerInput" placeholder="Type a ticker (e.g. NVDA) and press Enter…" maxlength="6">
+      </div>
+
+      <!-- Excel upload -->
+      <label id="xlUploadLabel" title="Upload an Excel or CSV file — any column named Ticker, Symbol, or Stock, or the first column">
+        <input type="file" id="xlFile" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleXLUpload(this)">
+        <span class="xl-btn">⬆ Upload Excel / CSV</span>
+      </label>
+
+      <button class="analyze-btn" id="analyzeBtn" onclick="runAnalysis()">Analyze All ↗</button>
+    </div>
+
+    <!-- Upload status -->
+    <div id="xlStatus" style="display:none;margin-top:8px;font-size:11px;padding:7px 10px;border-radius:6px;border-left:2px solid var(--accent);background:rgba(0,212,170,.06);color:var(--accent)"></div>
+
+    <div class="ticker-tags" id="tickerTags"></div>
+    <div class="params-row">
+      <div class="param-group">
+        <label>Hold period</label>
+        <select id="holdPeriod">
+          <option value="short">3–5 days</option>
+          <option value="medium" selected>1–3 weeks</option>
+          <option value="long">4–8 weeks</option>
+        </select>
+      </div>
+      <div class="param-group">
+        <label>Risk per trade</label>
+        <select id="riskPct">
+          <option value="0.5">0.5% capital</option>
+          <option value="1" selected>1.0% capital</option>
+          <option value="1.5">1.5% capital</option>
+          <option value="2">2.0% capital</option>
+        </select>
+      </div>
+      <div class="param-group">
+        <label>Min R:R</label>
+        <select id="minRR">
+          <option value="1.5">1.5 : 1</option>
+          <option value="2" selected>2.0 : 1</option>
+          <option value="2.5">2.5 : 1</option>
+          <option value="3">3.0 : 1</option>
+        </select>
+      </div>
+      <div class="param-group">
+        <label>Market regime</label>
+        <select id="marketRegime">
+          <option value="bull">Bull / trending up</option>
+          <option value="neutral" selected>Neutral / mixed</option>
+          <option value="bear">Bear / risk-off</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-panel" id="progressPanel">
+    <div class="progress-title" id="progressTitle">Fetching live market data…</div>
+    <div class="progress-steps" id="progressSteps"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="resultsContainer">
+    <div class="empty-state">
+      <div class="empty-icon">◈</div>
+      <div class="empty-title">No analyses yet</div>
+      <div class="empty-sub">Enter your API keys, add tickers, and click Analyze All.<br>Polygon.io provides live price, volume, RSI, MACD, and fundamentals.<br>Claude runs all 5 layers and returns precise buy / exit levels.</div>
+    </div>
+  </div>
+
+  <!-- Debug log -->
+  <div id="debugPanel" style="display:none;margin-top:24px">
+    <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
+      <span>Debug log</span>
+      <span style="cursor:pointer;color:var(--dim)" onclick="document.getElementById('debugPanel').style.display='none'">✕ hide</span>
+    </div>
+    <div id="debugLog" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:11px;max-height:200px;overflow-y:auto;font-family:var(--mono)"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script>
+// ── Keys (persisted to localStorage) ─────────────────────────────────────────
+const LS_POLY = 'swingedge_poly_key';
+const LS_ANTH = 'swingedge_anth_key';
+let POLY_KEY = '', ANTH_KEY = '';
+
+function saveKeys() {
+  POLY_KEY = document.getElementById('polygonKey').value.trim();
+  ANTH_KEY = document.getElementById('anthropicKey').value.trim();
+  try {
+    if (POLY_KEY) localStorage.setItem(LS_POLY, POLY_KEY);
+    if (ANTH_KEY) localStorage.setItem(LS_ANTH, ANTH_KEY);
+  } catch(e) { console.warn('localStorage unavailable:', e); }
+  document.getElementById('polyCheck').style.display = POLY_KEY ? 'block' : 'none';
+  document.getElementById('anthCheck').style.display = ANTH_KEY ? 'block' : 'none';
+}
+
+function clearKeys() {
+  if (!confirm('Remove saved API keys from this browser?')) return;
+  try { localStorage.removeItem(LS_POLY); localStorage.removeItem(LS_ANTH); } catch(e) {}
+  POLY_KEY = ''; ANTH_KEY = '';
+  document.getElementById('polygonKey').value  = '';
+  document.getElementById('anthropicKey').value = '';
+  document.getElementById('polyCheck').style.display = 'none';
+  document.getElementById('anthCheck').style.display = 'none';
+}
+
+function loadKeys() {
+  try {
+    const poly = localStorage.getItem(LS_POLY);
+    const anth = localStorage.getItem(LS_ANTH);
+    if (poly) { POLY_KEY = poly; document.getElementById('polygonKey').value  = poly; }
+    if (anth) { ANTH_KEY = anth; document.getElementById('anthropicKey').value = anth; }
+    document.getElementById('polyCheck').style.display = poly ? 'block' : 'none';
+    document.getElementById('anthCheck').style.display = anth ? 'block' : 'none';
+    if (poly || anth) document.getElementById('lastUpdated').textContent = 'Keys loaded — add tickers to begin';
+  } catch(e) { console.warn('localStorage unavailable:', e); }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  if (window.location.protocol === 'file:') {
+    document.getElementById('fileBanner').style.display = 'block';
+  }
+  loadKeys();
+  detectProxy(); // silent background check — result logged to debug panel
+  ['polygonKey','anthropicKey'].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener('input',  saveKeys);
+    el.addEventListener('change', saveKeys);
+    el.addEventListener('paste',  () => setTimeout(saveKeys, 50));
+    el.addEventListener('blur',   saveKeys);
+  });
+});
+
+// ── Debug logger ──────────────────────────────────────────────────────────────
+function dbg(msg, type = 'info') {
+  console.log('[SwingEdge]', msg);
+  const log = document.getElementById('debugLog');
+  if (!log) return;
+  const color = type === 'error' ? 'var(--bear)' : type === 'ok' ? 'var(--bull)' : 'var(--muted)';
+  const ts = new Date().toLocaleTimeString();
+  log.innerHTML += `<div style="color:${color};padding:2px 0;border-bottom:1px solid var(--border)">[${ts}] ${msg}</div>`;
+  log.scrollTop = log.scrollHeight;
+  document.getElementById('debugPanel').style.display = 'block';
+}
+
+// ── Tickers ───────────────────────────────────────────────────────────────────
+let tickers = [];
+const tickerInput = document.getElementById('tickerInput');
+tickerInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ',') {
+    e.preventDefault();
+    const t = tickerInput.value.trim().toUpperCase().replace(/[^A-Z]/g, '');
+    addTicker(t);
+    tickerInput.value = '';
+  }
+});
+
+function addTicker(t) {
+  t = (t || '').toUpperCase().replace(/[^A-Z]/g, '');
+  if (t && !tickers.includes(t) && tickers.length < 20) {
+    tickers.push(t);
+    renderTickers();
+  }
+}
+
+function removeTicker(t) { tickers = tickers.filter(x => x !== t); renderTickers(); }
+
+function renderTickers() {
+  const wrap = document.getElementById('tickerTags');
+  wrap.innerHTML = tickers.length
+    ? tickers.map(t =>
+        `<div class="ticker-tag"><span>${t}</span><span class="rm" onclick="removeTicker('${t}')">×</span></div>`
+      ).join('') +
+      (tickers.length > 1
+        ? `<div class="ticker-tag" style="cursor:pointer;color:var(--bear);border-color:rgba(255,77,106,.3)" onclick="clearAllTickers()">✕ clear all</div>`
+        : '')
+    : '';
+}
+
+function clearAllTickers() { tickers = []; renderTickers(); setXLStatus(''); }
+
+// ── Excel / CSV upload ────────────────────────────────────────────────────────
+function handleXLUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  // Reset file input so re-uploading same file fires change again
+  const reader = new FileReader();
+  reader.onload = e => {
+    try {
+      let found = [];
+
+      if (file.name.endsWith('.csv')) {
+        // Plain CSV — parse manually (no SheetJS needed but works too)
+        found = parseCSVTickers(e.target.result);
+      } else {
+        // Excel — use SheetJS
+        if (typeof XLSX === 'undefined') {
+          setXLStatus('SheetJS library not loaded yet — try again in a moment.', 'error');
+          return;
+        }
+        const wb = XLSX.read(e.target.result, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]]; // first sheet
+        const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        found = extractTickersFromRows(rows);
+      }
+
+      if (found.length === 0) {
+        setXLStatus('No valid tickers found. Make sure a column is named Ticker, Symbol, or Stock — or put tickers in the first column.', 'error');
+        input.value = '';
+        return;
+      }
+
+      // Merge with existing, dedupe, cap at 20
+      const before = tickers.length;
+      found.forEach(t => { if (!tickers.includes(t) && tickers.length < 20) tickers.push(t); });
+      const added = tickers.length - before;
+      const skipped = found.length - added;
+
+      renderTickers();
+      let msg = `✓ Loaded ${added} ticker${added!==1?'s':''} from ${file.name}`;
+      if (skipped > 0) msg += ` · ${skipped} duplicate${skipped!==1?'s':''}/over-limit skipped`;
+      if (tickers.length >= 20) msg += ' · 20-ticker limit reached';
+      setXLStatus(msg);
+    } catch(err) {
+      setXLStatus('Could not parse file: ' + err.message, 'error');
+      console.error(err);
+    }
+    input.value = ''; // reset so same file can be re-uploaded
+  };
+
+  if (file.name.endsWith('.csv')) {
+    reader.readAsText(file);
+  } else {
+    reader.readAsArrayBuffer(file);
+  }
+}
+
+// Extract tickers from SheetJS row array (first sheet)
+function extractTickersFromRows(rows) {
+  if (!rows || rows.length === 0) return [];
+
+  // Look for a header row with a recognised column name
+  const headerKeywords = ['ticker','symbol','stock','name','scrip'];
+  let colIdx = -1;
+  let dataStartRow = 0;
+
+  for (let r = 0; r < Math.min(5, rows.length); r++) {
+    const row = rows[r].map(c => String(c).trim().toLowerCase());
+    const match = row.findIndex(c => headerKeywords.some(k => c === k || c.startsWith(k)));
+    if (match !== -1) {
+      colIdx = match;
+      dataStartRow = r + 1;
+      break;
+    }
+  }
+
+  // No header found — fall back to first column
+  if (colIdx === -1) {
+    colIdx = 0;
+    // Skip first row only if it looks like a header (non-ticker text)
+    dataStartRow = /^[a-zA-Z\s]+$/.test(String(rows[0][0]).trim()) && !/^[A-Z]{1,6}$/.test(String(rows[0][0]).trim()) ? 1 : 0;
+  }
+
+  const result = [];
+  for (let r = dataStartRow; r < rows.length; r++) {
+    const cell = String(rows[r][colIdx] || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
+    if (cell.length >= 1 && cell.length <= 6 && !result.includes(cell)) {
+      result.push(cell);
+    }
+  }
+  return result;
+}
+
+// Parse CSV text to tickers
+function parseCSVTickers(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length === 0) return [];
+
+  // Detect delimiter
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const rows = lines.map(l => l.split(delim).map(c => c.replace(/^["']|["']$/g, '').trim()));
+  return extractTickersFromRows(rows);
+}
+
+function setXLStatus(msg, type = 'ok') {
+  const el = document.getElementById('xlStatus');
+  if (!msg) { el.style.display = 'none'; return; }
+  el.style.display = 'block';
+  el.style.borderColor  = type === 'error' ? 'var(--bear)' : 'var(--accent)';
+  el.style.background   = type === 'error' ? 'rgba(255,77,106,.06)' : 'rgba(0,212,170,.06)';
+  el.style.color        = type === 'error' ? 'var(--bear)' : 'var(--accent)';
+  el.textContent = msg;
+}
+
+// ── Progress UI ───────────────────────────────────────────────────────────────
+let progressState = [];
+function initProgress(steps) {
+  progressState = steps.map(s => ({ label: s, status: 'pending' }));
+  document.getElementById('progressPanel').classList.add('active');
+  renderProgress();
+}
+function setStep(idx, status) {
+  if (progressState[idx]) progressState[idx].status = status;
+  renderProgress();
+}
+function setProgressTitle(t) { document.getElementById('progressTitle').textContent = t; }
+function renderProgress() {
+  document.getElementById('progressSteps').innerHTML = progressState.map(s => {
+    const cls = s.status === 'done' ? 'done' : s.status === 'active' ? 'active' : '';
+    const icon = s.status === 'done' ? '✓' : s.status === 'active' ? '…' : '○';
+    return `<div class="prog-step ${cls}"><span class="dot"></span>${icon} ${s.label}</div>`;
+  }).join('');
+}
+function hideProgress() { document.getElementById('progressPanel').classList.remove('active'); }
+
+// ── API routing ───────────────────────────────────────────────────────────────
+// Detects proxy via /health check — works for localhost AND mobile on same WiFi.
+// Falls back to direct calls (desktop Chrome/Edge only from file://).
+
+const IS_FILE = window.location.protocol === 'file:';
+let USE_LOCAL_PROXY = false;
+
+async function detectProxy() {
+  try {
+    const r = await fetch('/health', { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      if (j.ok) {
+        USE_LOCAL_PROXY = true;
+        const mode = j.cloud ? '☁ Railway cloud' : '⚙ local server';
+        dbg(`✓ Proxy active (${mode}) — all API calls routed via server.js`, 'ok');
+        // Update header indicator
+        const el = document.getElementById('lastUpdated');
+        if (el && j.cloud) el.textContent = '☁ Running on Railway — ready';
+        else if (el) el.textContent = '⚙ Local server active — ready';
+        // Hide the file:// banner if showing (not needed when proxied)
+        document.getElementById('fileBanner').style.display = 'none';
+        return;
+      }
+    }
+  } catch(e) {}
+  USE_LOCAL_PROXY = false;
+  if (IS_FILE) {
+    dbg('ℹ No proxy — direct API calls (works on desktop Chrome/Edge). For mobile: run node server.js and open the Network URL shown in your terminal.');
+  } else {
+    dbg('ℹ No proxy — direct API calls.');
+  }
+}
+
+async function polyGet(path) {
+  const sep = path.includes('?') ? '&' : '?';
+  const url = USE_LOCAL_PROXY
+    ? `/proxy/polygon${path}${sep}apiKey=${POLY_KEY}`
+    : `https://api.polygon.io${path}${sep}apiKey=${POLY_KEY}`;
+  let r;
+  try {
+    r = await fetch(url, { mode: 'cors' });
+  } catch(e) { throw new Error(`Polygon network error: ${e.message}`); }
+  if (!r.ok) {
+    let body = ''; try { body = await r.text(); } catch(_) {}
+    throw new Error(`Polygon HTTP ${r.status} — ${body.slice(0,120)}`);
+  }
+  return r.json();
+}
+
+async function anthropicFetch(payload) {
+  const endpoint = USE_LOCAL_PROXY
+    ? '/proxy/anthropic'
+    : 'https://api.anthropic.com/v1/messages';
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': ANTH_KEY,
+    'anthropic-version': '2023-06-01',
+    'anthropic-dangerous-direct-browser-access': 'true'
+  };
+  let r;
+  try {
+    r = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(payload) });
+  } catch(e) { throw new Error(`Anthropic network error: ${e.message}`); }
+  const text = await r.text();
+  try { return JSON.parse(text); }
+  catch(e) { throw new Error(`Anthropic response not JSON: ${text.slice(0,300)}`); }
+}
+
+// Format date as YYYY-MM-DD using LOCAL timezone (avoids UTC drift for non-UTC timezones)
+function localDateStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+// Last completed trading day in LOCAL timezone
+// e.g. on Sunday in UTC+3, toISOString() would give Saturday UTC — this avoids that
+function prevTradingDay(offset = 1) {
+  const d = new Date();
+  let count = 0;
+  const total = Math.max(offset, 1);
+  while (count < total) {
+    d.setDate(d.getDate() - 1);
+    const dow = d.getDay(); // local day-of-week: 0=Sun, 6=Sat
+    if (dow !== 0 && dow !== 6) count++;
+  }
+  const str = localDateStr(d);
+  return str;
+}
+
+function nDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return localDateStr(d);
+}
+
+// Compute RSI from closes array
+function calcRSI(closes, period = 14) {
+  if (closes.length < period + 1) return null;
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff >= 0) gains += diff; else losses -= diff;
+  }
+  let avgG = gains / period, avgL = losses / period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgG = (avgG * (period - 1) + Math.max(diff, 0)) / period;
+    avgL = (avgL * (period - 1) + Math.max(-diff, 0)) / period;
+  }
+  if (avgL === 0) return 100;
+  return +(100 - 100 / (1 + avgG / avgL)).toFixed(1);
+}
+
+// Compute MACD
+function calcMACD(closes) {
+  if (closes.length < 26) return null;
+  const ema = (arr, period) => {
+    const k = 2 / (period + 1);
+    let e = arr[0];
+    for (let i = 1; i < arr.length; i++) e = arr[i] * k + e * (1 - k);
+    return e;
+  };
+  const ema12 = ema(closes.slice(-30), 12);
+  const ema26 = ema(closes.slice(-30), 26);
+  const macdLine = ema12 - ema26;
+  return +macdLine.toFixed(3);
+}
+
+// Simple SMA
+function sma(arr, n) {
+  if (arr.length < n) return null;
+  return +(arr.slice(-n).reduce((a, b) => a + b, 0) / n).toFixed(2);
+}
+
+// ATR
+function calcATR(bars, period = 14) {
+  if (bars.length < 2) return null;
+  const trs = [];
+  for (let i = 1; i < bars.length; i++) {
+    const h = bars[i].h, l = bars[i].l, pc = bars[i - 1].c;
+    trs.push(Math.max(h - l, Math.abs(h - pc), Math.abs(l - pc)));
+  }
+  const slice = trs.slice(-period);
+  return +(slice.reduce((a, b) => a + b, 0) / slice.length).toFixed(2);
+}
+
+// ── Fetch all data for one ticker ─────────────────────────────────────────────
+async function fetchTickerData(ticker) {
+  const today   = prevTradingDay(1);   // last completed session
+  const from90  = nDaysAgo(100);
+  const from365 = nDaysAgo(380);
+  dbg(`${ticker}: fetching bars ${from90} → ${today}`);
+
+  const [barsRes, snapRes, detailsRes] = await Promise.allSettled([
+    polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from90}/${today}?adjusted=true&sort=asc&limit=120`),
+    polyGet(`/v2/snapshot/locale/us/markets/stocks/tickers/${ticker}`),
+    polyGet(`/v3/reference/tickers/${ticker}`)
+  ]);
+
+  const bars    = barsRes.status    === 'fulfilled' ? (barsRes.value.results    || []) : [];
+  const snap    = snapRes.status    === 'fulfilled' ?  snapRes.value.ticker          : null;
+  const details = detailsRes.status === 'fulfilled' ?  detailsRes.value.results      : null;
+
+  if (bars.length === 0) {
+    dbg(`${ticker}: ⚠ zero bars returned — barsRes status=${barsRes.status}, error=${barsRes.reason||'none'}`, 'error');
+  }
+
+  // Yearly range for 52w hi/lo
+  const barsYearRes = await polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from365}/${today}?adjusted=true&sort=asc&limit=400`).catch(() => ({ results: [] }));
+  const barsYear = barsYearRes.results || [];
+
+  const closes = bars.map(b => b.c);
+  const vols   = bars.map(b => b.v);
+
+  // Current price — try live snapshot first, fall back to last daily bar close
+  const lastBar = bars[bars.length - 1] || {};
+  const prevBar = bars[bars.length - 2] || {};
+
+  const livePrice = snap?.day?.c || snap?.lastTrade?.p || null;
+  const lastClosePrice = lastBar.c || snap?.prevDay?.c || null;
+
+  const price = livePrice || lastClosePrice || 0;
+  // Flag whether we're showing live intraday price or just the last session close
+  const priceIsLive   = !!livePrice;
+  const priceIsClose  = !livePrice && !!lastClosePrice;
+  const priceSource   = livePrice ? 'live'
+    : lastClosePrice ? `last close ${prevTradingDay(1)}`
+    : 'unavailable';
+
+  const prevClose = prevBar.c || snap?.prevDay?.c || price;
+  // Only show day change if we have a live price; last-close vs prev-close change is misleading
+  const changePct = (priceIsLive && prevClose && price)
+    ? +((price - prevClose) / prevClose * 100).toFixed(2)
+    : null;
+
+  // Volume: only meaningful for live session
+  const volume   = priceIsLive ? (snap?.day?.v || lastBar.v || 0) : 0;
+  const avgVol20 = vols.length >= 20
+    ? Math.round(vols.slice(-20).reduce((a,b) => a+b, 0) / 20)
+    : null;
+
+  // Technicals
+  const rsi14 = calcRSI(closes);
+  const macd  = calcMACD(closes);
+  const ma20  = sma(closes, 20);
+  const ma50  = sma(closes, 50);
+  const ma200 = sma(closes, 200);
+  const atr14 = calcATR(bars);
+
+  // 52-week range
+  const wk52Hi = barsYear.length ? +Math.max(...barsYear.map(b => b.h)).toFixed(2) : null;
+  const wk52Lo = barsYear.length ? +Math.min(...barsYear.map(b => b.l)).toFixed(2) : null;
+
+  // Volume ratio
+  const volRatio = avgVol20 && volume ? +(volume / avgVol20).toFixed(2) : null;
+
+  // Trend assessment
+  let trend = 'unknown';
+  if (ma50 && ma200) {
+    if (price > ma50 && price > ma200 && ma50 > ma200) trend = 'strong uptrend';
+    else if (price > ma50 && price > ma200) trend = 'uptrend';
+    else if (price < ma50 && price < ma200) trend = 'downtrend';
+    else trend = 'mixed';
+  }
+
+  // Company info
+  const companyName = details?.name || ticker;
+  const sector      = details?.sic_description || '';
+  const marketCap   = details?.market_cap ? (details.market_cap / 1e9).toFixed(1) + 'B' : null;
+  const description = details?.description ? details.description.slice(0, 300) : '';
+
+  // Financials snapshot (from details if available)
+  const peRatio    = snap?.day?.vw && closes.length ? null : null; // not in free snapshot
+  const shareCount = details?.share_class_shares_outstanding;
+
+  // Recent bars for spark (last 30)
+  const sparkBars = bars.slice(-30).map(b => b.c);
+
+  return {
+    ticker, companyName, sector, marketCap, description,
+    price: price ? +price.toFixed(2) : 0,
+    prevClose: prevClose ? +prevClose.toFixed(2) : 0,
+    changePct, priceSource, priceIsLive, priceIsClose,
+    volume, avgVol20, volRatio,
+    rsi14, macd, ma20, ma50, ma200, atr14,
+    wk52Hi, wk52Lo, trend,
+    closes: closes.slice(-30), sparkBars,
+    rawBars: bars.slice(-60)
+  };
+}
+
+// ── Build AI prompt with real data ────────────────────────────────────────────
+function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
+  const stockSummaries = stocks.map(s => {
+    const aboveMa50  = s.ma50  ? (s.price > s.ma50  ? 'yes' : 'no') : 'n/a';
+    const aboveMa200 = s.ma200 ? (s.price > s.ma200 ? 'yes' : 'no') : 'n/a';
+    const volStr = s.volRatio ? `${s.volRatio}x 20d avg` : 'n/a';
+    const wk52str = s.wk52Hi ? `${s.wk52Lo} - ${s.wk52Hi}` : 'n/a';
+    return `
+TICKER: ${s.ticker}
+Company: ${s.companyName}
+Sector: ${s.sector || 'n/a'}
+Market cap: ${s.marketCap || 'n/a'}
+
+LIVE PRICE DATA:
+- Price: ${s.price} (source: ${s.priceSource})
+- Prev close: ${s.prevClose}
+- Day change: ${s.changePct != null ? s.changePct + '%' : 'n/a (last close price used)'}
+- Today volume: ${s.volume ? s.volume.toLocaleString() : 'n/a'} (${volStr})
+- 52-week range: ${wk52str}
+
+TECHNICALS (computed from Polygon daily bars):
+- RSI(14): ${s.rsi14 ?? 'n/a'}
+- MACD line: ${s.macd ?? 'n/a'}
+- MA20: ${s.ma20 ?? 'n/a'}
+- MA50: ${s.ma50 ?? 'n/a'} | price above MA50: ${aboveMa50}
+- MA200: ${s.ma200 ?? 'n/a'} | price above MA200: ${aboveMa200}
+- ATR(14): ${s.atr14 ?? 'n/a'}
+- Trend: ${s.trend}
+- Last 10 closes: ${s.closes.slice(-10).join(', ')}`.trim();
+  }).join('\n\n---\n\n');
+
+  return `You are an expert swing trade analyst. You have been given REAL live market data fetched from Polygon.io for each stock below. Use ONLY these actual numbers for your analysis — do not invent or substitute any prices, volumes, or technicals.
+
+PARAMETERS:
+- Hold period: ${holdPeriod}
+- Risk per trade: ${riskPct}% of capital
+- Minimum reward:risk required: ${minRR}:1
+- Market regime: ${regime}
+
+LIVE STOCK DATA:
+${stockSummaries}
+
+TASK:
+For each stock, apply the 5-layer swing trade framework using the real data above:
+1. Setup quality: chart pattern (use last 10 closes to identify), trend direction (use MAs), relative strength, market regime fit
+2. Technical confirmation: RSI level, MACD signal, volume vs average, key support/resistance from price data
+3. Fundamental context: sector momentum, company quality, macro fit given regime
+4. Risk parameters: ATR-based stop placement, reward:risk calculation, position sizing feasibility
+5. Entry and exit plan: specific entry trigger price, exact profit target, exact stop loss
+
+For entry, target, and stop: derive them from the ACTUAL current price and ATR provided. Entry should be at or near current price or a specific breakout level. Stop = entry minus (1.5 to 2x ATR). Target = entry plus (minRR x stop distance).
+
+Return ONLY a valid JSON array — no text outside it, no markdown fences, no comments.
+Schema for each object:
+{"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"buy","overallScore":0,"rr":"0.0","upside":"+0.0%","stopPct":"-0.0%","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","wk52":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
+
+Verdict rules: buy = overallScore >= 65 AND rr >= ${minRR}. watch = overallScore 45-64 OR rr < ${minRR}. avoid = overallScore < 45 or setup broken.`;
+}
+
+// ── Robust JSON parser ────────────────────────────────────────────────────────
+function parseJSON(raw) {
+  let t = raw.replace(/```json\s*/gi,'').replace(/```\s*/g,'').trim();
+  t = t.replace(/\/\/[^\n"]*/g, '');
+  t = t.replace(/,(\s*[}\]])/g, '$1');
+  try { return JSON.parse(t); } catch(e){}
+  const a = t.indexOf('['), b = t.lastIndexOf(']');
+  if (a !== -1 && b > a) {
+    const slice = t.slice(a, b+1);
+    try { return JSON.parse(slice); } catch(e){}
+    // Salvage complete objects
+    const objs = []; let depth=0, start=-1;
+    for (let i=0;i<slice.length;i++){
+      if(slice[i]==='{'){if(depth===0)start=i;depth++;}
+      else if(slice[i]==='}'){depth--;if(depth===0&&start!==-1){
+        try{objs.push(JSON.parse(slice.slice(start,i+1).replace(/,(\s*[}\]])/g,'$1')));}catch(e){}
+        start=-1;
+      }}
+    }
+    if(objs.length) return objs;
+  }
+  return null;
+}
+
+// ── Main run ──────────────────────────────────────────────────────────────────
+async function runAnalysis() {
+  // Clear debug log
+  const log = document.getElementById('debugLog');
+  if (log) log.innerHTML = '';
+  document.getElementById('debugPanel').style.display = 'none';
+
+  saveKeys(); // force re-read in case paste didn't fire
+
+  if (!POLY_KEY) { alert('Please enter your Polygon.io API key.'); return; }
+  if (!ANTH_KEY) { alert('Please enter your Anthropic API key.'); return; }
+  if (tickers.length === 0) { tickerInput.focus(); alert('Add at least one ticker, or upload an Excel file.'); return; }
+
+  dbg(`Starting analysis for: ${tickers.join(', ')}`);
+  dbg(`Polygon key: ${POLY_KEY.slice(0,8)}… | Anthropic key: ${ANTH_KEY.slice(0,12)}…`);
+  await detectProxy();
+  dbg(`Routing: ${USE_LOCAL_PROXY ? '✓ local proxy (server.js)' : IS_FILE ? '⚠ direct from file:// — mobile may fail, run node server.js for mobile support' : 'direct http'}`);
+
+  const btn = document.getElementById('analyzeBtn');
+  btn.disabled = true;
+
+  const steps = [
+    ...tickers.map(t => `Fetching live data: ${t}`),
+    'Computing RSI, MACD, ATR, MAs…',
+    'Running 5-layer AI analysis…',
+    'Calculating entry / exit levels…'
+  ];
+  initProgress(steps);
+
+  const holdPeriod  = document.getElementById('holdPeriod').value;
+  const riskPct     = document.getElementById('riskPct').value;
+  const minRR       = document.getElementById('minRR').value;
+  const regime      = document.getElementById('marketRegime').value;
+
+  try {
+    // 1. Fetch polygon data for each ticker
+    const stockData = [];
+    for (let i = 0; i < tickers.length; i++) {
+      setStep(i, 'active');
+      setProgressTitle(`Fetching live data from Polygon.io… (${i+1}/${tickers.length})`);
+      try {
+        const data = await fetchTickerData(tickers[i]);
+        stockData.push(data);
+        setStep(i, 'done');
+        dbg(`✓ ${tickers[i]}: price=$${data.price} (${data.priceSource}), bars=${data.rawBars?.length||0}, RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
+      } catch(e) {
+        setStep(i, 'done');
+        dbg(`✗ Polygon fetch failed for ${tickers[i]}: ${e.message}`, 'error');
+        console.warn(`Polygon fetch failed for ${tickers[i]}:`, e);
+        // push minimal stub so AI can still attempt
+        stockData.push({ ticker: tickers[i], companyName: tickers[i], price: 0,
+          prevClose:0, changePct:0, volume:0, rsi14:null, macd:null,
+          ma20:null, ma50:null, ma200:null, atr14:null, trend:'unknown',
+          closes:[], sparkBars:[], rawBars:[], wk52Hi:null, wk52Lo:null,
+          volRatio:null, sector:'', marketCap:null });
+      }
+    }
+
+    // 2. Technicals step
+    const techStep = tickers.length;
+    setStep(techStep, 'active');
+    setProgressTitle('Technicals computed — sending to AI…');
+    await new Promise(r => setTimeout(r, 300));
+    setStep(techStep, 'done');
+
+    // 3. AI analysis
+    const aiStep = tickers.length + 1;
+    setStep(aiStep, 'active');
+    setProgressTitle('Claude is running the 5-layer analysis…');
+
+    const prompt = buildPrompt(stockData, holdPeriod, riskPct, minRR, regime);
+    dbg(`Sending to Anthropic API (${USE_LOCAL_PROXY ? 'local proxy' : 'direct'})…`);
+    const aiData = await anthropicFetch({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 8000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+    dbg(`Anthropic response keys: ${Object.keys(aiData||{}).join(',')}`);
+
+    // Handle error responses
+    if (aiData.error) throw new Error(`Anthropic: ${aiData.error.message || JSON.stringify(aiData.error)}`);
+    if (aiData.type === 'error') throw new Error(`Anthropic: ${aiData.error?.message || JSON.stringify(aiData)}`);
+
+    // Extract text — handle both content array and direct text
+    let rawText = '';
+    if (Array.isArray(aiData.content)) {
+      rawText = aiData.content.find(b => b.type === 'text')?.text || '';
+    } else if (typeof aiData.content === 'string') {
+      rawText = aiData.content;
+    } else if (aiData.completion) {
+      rawText = aiData.completion; // legacy format
+    }
+
+    if (!rawText) {
+      dbg(`Full Anthropic response: ${JSON.stringify(aiData).slice(0,400)}`, 'error');
+      throw new Error(`Invalid response format — got: ${JSON.stringify(aiData).slice(0,120)}`);
+    }
+    dbg(`AI response received (${rawText.length} chars)`);
+    setStep(aiStep, 'done');
+
+    const calcStep = tickers.length + 2;
+    setStep(calcStep, 'active');
+    dbg(`Parsing AI JSON response…`);
+    const results = parseJSON(rawText);
+    if (!results || results.length === 0) {
+      dbg(`Parse failed. Raw response start: ${rawText.slice(0,200)}`, 'error');
+      throw new Error('Could not parse AI response JSON');
+    }
+    dbg(`Parsed ${results.length} result(s) successfully`, 'ok');
+
+    // Merge with real polygon data
+    results.forEach(r => {
+      const live = stockData.find(s => s.ticker === r.ticker);
+      if (live) {
+        r._live = live;
+        // Override currentPrice with real polygon price
+        r.currentPrice = live.price || r.currentPrice;
+      }
+    });
+
+    setStep(calcStep, 'done');
+    hideProgress();
+    renderResults(results);
+    document.getElementById('lastUpdated').textContent = 'Updated ' + new Date().toLocaleTimeString();
+
+  } catch(err) {
+    dbg(`FATAL ERROR: ${err.message}`, 'error');
+    hideProgress();
+    renderError(err.message);
+    console.error(err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+let _lastResults = [];
+
+function renderResults(results) {
+  _lastResults = results;
+
+  // Sort: Buy first → Avoid (sell) → Watch, then by score descending within each group
+  const verdictOrder = { buy: 0, avoid: 1, watch: 2 };
+  results = [...results].sort((a, b) => {
+    const vDiff = (verdictOrder[a.verdict] ?? 2) - (verdictOrder[b.verdict] ?? 2);
+    if (vDiff !== 0) return vDiff;
+    return (b.overallScore || 0) - (a.overallScore || 0);
+  });
+
+  const container = document.getElementById('resultsContainer');
+  const buys    = results.filter(r => r.verdict === 'buy').length;
+  const watches = results.filter(r => r.verdict === 'watch').length;
+  const avoids  = results.filter(r => r.verdict === 'avoid').length;
+  const avgScore = Math.round(results.reduce((s,r) => s+(r.overallScore||0),0)/results.length);
+  const bestRR   = Math.max(...results.map(r => parseFloat(r.rr||0))).toFixed(1);
+
+  // ── Summary bar ────────────────────────────────────────────────
+  const summaryHtml = `
+    <div class="summary-bar">
+      <div class="sum-item"><div class="sum-label">Buy signals</div><div class="sum-val" style="color:var(--bull)">${buys}</div></div>
+      <div class="sum-item"><div class="sum-label">Watch</div><div class="sum-val" style="color:var(--warn)">${watches}</div></div>
+      <div class="sum-item"><div class="sum-label">Avoid</div><div class="sum-val" style="color:var(--bear)">${avoids}</div></div>
+      <div class="sum-item"><div class="sum-label">Avg score</div><div class="sum-val">${avgScore}</div></div>
+      <div class="sum-item"><div class="sum-label">Best R:R</div><div class="sum-val" style="color:var(--accent2)">${bestRR}</div></div>
+    </div>`;
+
+  // ── View 1: Trade table ─────────────────────────────────────────
+  let tableRows = '';
+  results.forEach((r,i) => {
+    const live = r._live || {};
+    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
+    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const isLive    = live.priceIsLive;
+    const isClose   = live.priceIsClose;
+    const chgColor  = (live.changePct||0) >= 0 ? 'var(--bull)' : 'var(--bear)';
+    const chgSign   = (live.changePct||0) >= 0 ? '+' : '';
+    const rrNum     = parseFloat(r.rr||0);
+    const rrColor   = rrNum>=2.5?'var(--bull)':rrNum>=1.5?'var(--warn)':'var(--bear)';
+
+    // Price label: live change % OR last-close badge
+    const priceSub = isLive
+      ? `<div class="t-chg" style="color:${chgColor}">${chgSign}${live.changePct}%</div>`
+      : isClose
+        ? `<div class="t-chg last-close-badge">◷ Last close</div>`
+        : `<div class="t-chg" style="color:var(--dim)">No price data</div>`;
+
+    tableRows += `<tr>
+      <td>
+        <div class="t-ticker">${r.ticker}</div>
+        <div class="t-name">${r.companyName||''}</div>
+        ${priceSub}
+      </td>
+      <td><span class="verdict-badge ${vc}">${vl}</span></td>
+      <td class="td-r">
+        <div class="t-price pv-current">$${fmt(r.currentPrice)}</div>
+        ${!isLive ? `<div class="t-sub" style="color:var(--warn);font-size:9px">last close</div>` : ''}
+      </td>
+      <td class="td-r">
+        <div class="t-price pv-entry">$${fmt(r.entryPrice)}</div>
+        <div class="t-sub">${r.entryNote ? r.entryNote.slice(0,40)+'…' : ''}</div>
+      </td>
+      <td class="td-r">
+        <div class="t-price pv-target">$${fmt(r.targetPrice)}</div>
+        <div class="t-sub pos">${r.upside||''}</div>
+      </td>
+      <td class="td-r">
+        <div class="t-price pv-stop">$${fmt(r.stopPrice)}</div>
+        <div class="t-sub neg">${r.stopPct||''}</div>
+      </td>
+      <td class="td-r">
+        <div class="rr-val" style="color:${rrColor}">${r.rr||'—'}</div>
+      </td>
+      <td><canvas class="spark-inline" id="spark-${i}"></canvas></td>
+    </tr>`;
+  });
+
+  const view1 = `
+    <div class="trade-table-wrap">
+      <table class="trade-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th>Signal</th>
+            <th class="th-r">Current</th>
+            <th class="th-r">Entry</th>
+            <th class="th-r">Target</th>
+            <th class="th-r">Stop</th>
+            <th class="th-r">R:R</th>
+            <th>30d Chart</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>`;
+
+  // ── View 2: Analysis panels ──────────────────────────────────────
+  let analysisCards = '';
+  results.forEach((r,i) => {
+    const live = r._live || {};
+    const kd   = r.keyDetails || {};
+    const vc   = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
+    const vl   = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const isLive    = live.priceIsLive;
+    const chgColor  = (live.changePct||0) >= 0 ? 'var(--bull)' : 'var(--bear)';
+    const chgSign   = (live.changePct||0) >= 0 ? '+' : '';
+    const scoreColor = (r.overallScore||0)>=65?'var(--bull)':(r.overallScore||0)>=45?'var(--warn)':'var(--bear)';
+
+    // Price display: live change or last-close label
+    const priceDisplay = isLive
+      ? `$${fmt(r.currentPrice)} <span style="color:${chgColor};font-size:11px">${chgSign}${live.changePct}%</span>`
+      : `$${fmt(r.currentPrice)} <span style="color:var(--warn);font-size:10px;background:rgba(245,166,35,.12);padding:1px 6px;border-radius:3px;border:1px solid rgba(245,166,35,.25)">◷ last close</span>`;
+
+    // 5-layer bars
+    let layerRows = '';
+    (r.layers||[]).forEach(l => {
+      const s  = l.score||0;
+      const bc = s>=65?'bar-bull':s>=45?'bar-warn':'bar-bear';
+      const sc = s>=65?'var(--bull)':s>=45?'var(--warn)':'var(--bear)';
+      layerRows += `<div class="layer-row">
+        <span class="layer-name">${l.name}</span>
+        <div class="layer-bar-wrap"><div class="layer-bar ${bc}" data-w="${s}"></div></div>
+        <span class="layer-score-num" style="color:${sc}">${s}</span>
+        <span class="layer-note-txt">${l.note||''}</span>
+      </div>`;
+    });
+
+    // Market + technicals kv
+    const mkt = [
+      ['Price',       priceDisplay],
+      ['Price source', live.priceSource || '—'],
+      ['Volume',      isLive && live.volume ? live.volume.toLocaleString()+(live.volRatio?` (${live.volRatio}x avg)`:'') : '—'],
+      ['52w range',   live.wk52Lo&&live.wk52Hi ? `$${live.wk52Lo} – $${live.wk52Hi}` : '—'],
+      ['Mkt cap',     live.marketCap||'—'],
+      ['Sector',      live.sector||kd.sector||'—'],
+    ];
+    const tech = [
+      ['RSI (14)',  live.rsi14!=null ? `${live.rsi14}${live.rsi14>70?' ↑OB':live.rsi14<30?' ↓OS':''}` : (kd.rsi||'—')],
+      ['MACD',     live.macd!=null  ? `${live.macd>0?'+':''}${live.macd}` : (kd.macd||'—')],
+      ['MA 20',    live.ma20  ? `$${fmt(live.ma20)}`  : '—'],
+      ['MA 50',    live.ma50  ? `$${fmt(live.ma50)} ${live.price>live.ma50?'↑':'↓'}` : '—'],
+      ['MA 200',   live.ma200 ? `$${fmt(live.ma200)} ${live.price>live.ma200?'↑':'↓'}` : '—'],
+      ['ATR (14)', live.atr14 ? `$${live.atr14}` : (kd.atr||'—')],
+      ['Trend',    live.trend||kd.trend||'—'],
+      ['Pattern',  kd.pattern||'—'],
+    ];
+
+    const kvRows = arr => arr.filter(([,v])=>v&&v!=='—')
+      .map(([l,v])=>`<div class="kv"><span class="kv-l">${l}</span><span class="kv-r">${v}</span></div>`).join('');
+
+    analysisCards += `
+    <div class="a-card">
+      <div class="a-card-header">
+        <div class="a-left">
+          <div class="a-ticker">${r.ticker}</div>
+          <div class="a-name">${r.companyName||''}</div>
+          <div style="font-size:12px;margin-top:4px">${priceDisplay}</div>
+        </div>
+        <div class="a-prices">
+          <div class="a-price-cell"><div class="a-price-label">Entry</div><div class="a-price-val pv-entry">$${fmt(r.entryPrice)}</div></div>
+          <div class="a-price-cell"><div class="a-price-label">Target</div><div class="a-price-val pv-target">$${fmt(r.targetPrice)} <span class="pos" style="font-size:10px">${r.upside||''}</span></div></div>
+          <div class="a-price-cell"><div class="a-price-label">Stop</div><div class="a-price-val pv-stop">$${fmt(r.stopPrice)} <span class="neg" style="font-size:10px">${r.stopPct||''}</span></div></div>
+        </div>
+        <div class="a-right">
+          <div class="a-score-big" style="color:${scoreColor}">${r.overallScore||'—'}</div>
+          <div class="a-score-label">Overall score</div>
+          <div><span class="verdict-badge ${vc}">${vl}</span> <span class="rr-badge">R:R ${r.rr||'—'}</span></div>
+        </div>
+      </div>
+      <div class="a-body">
+        <div class="a-col">
+          <div class="a-col-title">5-layer analysis</div>
+          ${layerRows}
+        </div>
+        <div class="a-col">
+          <div class="a-col-title">Market &amp; technicals</div>
+          ${kvRows(mkt)}
+          <div style="margin-top:10px;border-top:1px solid var(--border);padding-top:10px"></div>
+          ${kvRows(tech)}
+        </div>
+        <div class="a-col">
+          <div class="a-col-title">Trade plan</div>
+          <div class="trade-note note-entry"><span class="nlabel">Entry trigger</span>${r.entryNote||'—'}</div>
+          <div class="trade-note note-exit"><span class="nlabel">Exit / profit taking</span>${r.exitNote||'—'}</div>
+          <div class="trade-note note-stop"><span class="nlabel">Stop loss logic</span>${r.stopNote||'—'}</div>
+        </div>
+      </div>
+    </div>`;
+  });
+
+  const view2 = `<div class="analysis-wrap">${analysisCards}</div>`;
+
+  // ── Assemble ────────────────────────────────────────────────────
+  container.innerHTML = `
+    ${summaryHtml}
+    <div class="results-tabs">
+      <div class="results-tab active" id="rtab-1" onclick="switchView(1)">Trade table</div>
+      <div class="results-tab"        id="rtab-2" onclick="switchView(2)">Full analysis</div>
+    </div>
+    <div class="results-view active" id="rview-1">${view1}</div>
+    <div class="results-view"        id="rview-2">${view2}</div>`;
+
+  // Draw sparks after render
+  setTimeout(() => {
+    results.forEach((r,i) => {
+      const live = r._live;
+      if (live?.sparkBars?.length > 1) drawSpark('spark-'+i, live.sparkBars, r.verdict);
+    });
+  }, 100);
+}
+
+function switchView(n) {
+  [1,2].forEach(t => {
+    document.getElementById(`rtab-${t}`).classList.toggle('active', t===n);
+    document.getElementById(`rview-${t}`).classList.toggle('active', t===n);
+  });
+  // Animate layer bars when analysis view opens
+  if (n === 2) {
+    setTimeout(() => {
+      document.querySelectorAll('#rview-2 .layer-bar[data-w]').forEach(b => {
+        b.style.width = b.dataset.w + '%';
+      });
+    }, 60);
+  }
+}
+
+// ── Spark chart ───────────────────────────────────────────────────────────────
+function drawSpark(id, closes, verdict) {
+  const canvas = document.getElementById(id);
+  if (!canvas || closes.length < 2) return;
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.offsetWidth || 120;
+  const H = canvas.offsetHeight || 40;
+  canvas.width  = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.scale(dpr, dpr);
+
+  const min = Math.min(...closes), max = Math.max(...closes);
+  const range = max - min || 1;
+  const pad = 4;
+  const xStep = (W - pad*2) / (closes.length - 1);
+  const color = verdict==='buy'?'#00d4aa':verdict==='watch'?'#f5a623':'#ff4d6a';
+
+  const grad = ctx.createLinearGradient(0, pad, 0, H-pad);
+  grad.addColorStop(0, color+'28');
+  grad.addColorStop(1, color+'00');
+
+  const pts = closes.map((c,i) => ({
+    x: pad + i * xStep,
+    y: H - pad - ((c - min) / range) * (H - pad*2)
+  }));
+
+  ctx.beginPath();
+  pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+  ctx.lineTo(pts[pts.length-1].x, H-pad);
+  ctx.lineTo(pts[0].x, H-pad);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.beginPath();
+  pts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  ctx.stroke();
+
+  const lp = pts[pts.length-1];
+  ctx.beginPath();
+  ctx.arc(lp.x, lp.y, 2.5, 0, Math.PI*2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function fmt(n) {
+  if (n == null || isNaN(+n) || n === 0) return '—';
+  return (+n).toFixed(2);
+}
+
+function renderError(msg) {
+  document.getElementById('resultsContainer').innerHTML = `
+    <div class="empty-state">
+      <div class="empty-icon">⚠</div>
+      <div class="empty-title">Analysis failed</div>
+      <div class="empty-sub">Something went wrong. Check your API keys and try again.
+        ${msg?`<br><span style="color:var(--dim);font-size:10px;margin-top:6px;display:block">${msg}</span>`:''}
+      </div>
+    </div>`;
+}
+</script>
+</body>
+</html>
