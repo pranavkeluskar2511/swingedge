@@ -182,6 +182,13 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .note-stop .nlabel{color:var(--bear)}
 .nlabel{font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;display:block;margin-bottom:4px}
 
+/* ── Cost strip ─────────────────────────────────────────────────────────── */
+.cs-item{padding:10px 16px;border-right:1px solid var(--border);flex-shrink:0}
+.cs-item:last-of-type{border-right:none}
+.cs-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
+.cs-val{font-family:var(--display);font-size:15px;font-weight:700;color:var(--text)}
+.cs-sub{font-size:10px;color:var(--muted);font-family:var(--mono);font-weight:400;margin-left:4px}
+
 /* Error / empty */
 .empty-state{text-align:center;padding:60px 20px;color:var(--muted)}
 .empty-icon{font-size:36px;margin-bottom:14px;opacity:.3}
@@ -302,6 +309,9 @@ canvas.spark-inline{display:block;width:120px;height:40px}
     <div class="progress-title" id="progressTitle">Fetching live market data…</div>
     <div class="progress-steps" id="progressSteps"></div>
   </div>
+
+  <!-- Cost strip — shown after every run -->
+  <div id="costStrip" style="display:none;flex-wrap:wrap;gap:0;background:var(--surface);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-bottom:16px"></div>
 
   <!-- Results -->
   <div id="resultsContainer">
@@ -1142,6 +1152,9 @@ async function runAnalysis() {
   const minRR      = document.getElementById('minRR').value;
   const regime     = document.getElementById('marketRegime').value;
 
+  // ── Token accumulator for this run ───────────────────────────────────────
+  const runTokens = { input: 0, output: 0, batches: 0, failedBatches: 0 };
+
   // Show initial progress panel
   initProgress([
     `Fetching Polygon data (${tickers.length} tickers in parallel)…`,
@@ -1199,8 +1212,14 @@ async function runAnalysis() {
         else if (typeof aiData.content === 'string') rawText = aiData.content;
         else if (aiData.completion) rawText = aiData.completion;
 
-        const tokensOut = aiData.usage?.output_tokens || '?';
-        dbg(`Batch ${b+1} response: ${rawText.length} chars, ${tokensOut}/8000 tokens`, tokensOut > 7500 ? 'error' : 'ok');
+        const tokensIn  = aiData.usage?.input_tokens  || 0;
+        const tokensOut = aiData.usage?.output_tokens || 0;
+        runTokens.input  += tokensIn;
+        runTokens.output += tokensOut;
+        runTokens.batches++;
+
+        const batchCost = (tokensIn * 3 / 1_000_000) + (tokensOut * 15 / 1_000_000);
+        dbg(`Batch ${b+1}: in=${tokensIn} out=${tokensOut} cost=$${batchCost.toFixed(5)}`, tokensOut > 7500 ? 'error' : 'ok');
 
         const batchResults = parseJSON(rawText);
         if (!batchResults || batchResults.length === 0) {
@@ -1239,6 +1258,7 @@ async function runAnalysis() {
           renderStreamingResults(allResults, b+1, batches.length);
         }
       } catch(batchErr) {
+        runTokens.failedBatches++;
         dbg(`Batch ${b+1} failed: ${batchErr.message}`, 'error');
       }
 
@@ -1247,10 +1267,25 @@ async function runAnalysis() {
 
     // ── Phase 3: Final render ─────────────────────────────────────────────────
     hideProgress();
+
+    // ── Token / cost summary ─────────────────────────────────────────────
+    const runCost     = (runTokens.input * 3 / 1_000_000) + (runTokens.output * 15 / 1_000_000);
+    const tokPerStock = allResults.length
+      ? Math.round((runTokens.input + runTokens.output) / allResults.length)
+      : 0;
+    dbg(`─── RUN SUMMARY ───`, 'ok');
+    dbg(`Input tokens : ${runTokens.input.toLocaleString()}  ($${(runTokens.input  * 3  / 1_000_000).toFixed(5)})`, 'ok');
+    dbg(`Output tokens: ${runTokens.output.toLocaleString()}  ($${(runTokens.output * 15 / 1_000_000).toFixed(5)})`, 'ok');
+    dbg(`Total tokens : ${(runTokens.input+runTokens.output).toLocaleString()}  |  Cost: $${runCost.toFixed(5)}  |  ~${tokPerStock} tokens/stock`, 'ok');
+    dbg(`Batches: ${runTokens.batches} completed, ${runTokens.failedBatches} failed`, runTokens.failedBatches > 0 ? 'error' : 'ok');
+
+    // Show inline cost strip below results
+    showCostStrip(runTokens, runCost, allResults.length, tickers.length);
+
     if (allResults.length > 0) {
       renderResults(allResults);
       document.getElementById('lastUpdated').textContent =
-        `Updated ${new Date().toLocaleTimeString()} — ${allResults.length}/${tickers.length} analyzed`;
+        `Updated ${new Date().toLocaleTimeString()} — ${allResults.length}/${tickers.length} · $${runCost.toFixed(4)} this run`;
       dbg(`✓ Complete — ${allResults.length}/${tickers.length} stocks analyzed`, 'ok');
     } else {
       renderError('No results returned from any batch. Check API keys and try again.');
@@ -1277,6 +1312,51 @@ function chunkArray(arr, size) {
   const chunks = [];
   for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
   return chunks;
+}
+
+// ── Cost strip shown after every run ─────────────────────────────────────────
+function showCostStrip(tokens, cost, analyzed, total) {
+  const el = document.getElementById('costStrip');
+  if (!el) return;
+  const inCost  = (tokens.input  * 3  / 1_000_000);
+  const outCost = (tokens.output * 15 / 1_000_000);
+  const tokTotal = tokens.input + tokens.output;
+  const perStock = analyzed ? Math.round(tokTotal / analyzed) : 0;
+
+  // Estimate vs pre-optimisation baseline (500 tokens/stock output before, ~90 now)
+  const baselineOut = analyzed * 500;
+  const actualOut   = tokens.output;
+  const saving = baselineOut > 0 ? Math.round((1 - actualOut / baselineOut) * 100) : null;
+
+  el.style.display = 'flex';
+  el.innerHTML = `
+    <div class="cs-item">
+      <div class="cs-label">This run cost</div>
+      <div class="cs-val" style="color:var(--accent)">$${cost.toFixed(5)}</div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">Input tokens</div>
+      <div class="cs-val">${tokens.input.toLocaleString()} <span class="cs-sub">$${inCost.toFixed(5)}</span></div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">Output tokens</div>
+      <div class="cs-val">${tokens.output.toLocaleString()} <span class="cs-sub">$${outCost.toFixed(5)}</span></div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">Tokens / stock</div>
+      <div class="cs-val">${perStock.toLocaleString()}</div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">Stocks analyzed</div>
+      <div class="cs-val">${analyzed} / ${total}</div>
+    </div>
+    ${saving !== null ? `<div class="cs-item">
+      <div class="cs-label">Output vs baseline</div>
+      <div class="cs-val" style="color:${saving > 0 ? 'var(--bull)' : 'var(--bear)'}">${saving > 0 ? '−' : '+'}${Math.abs(saving)}% ${saving > 0 ? '✓ saving' : '⚠ over'}</div>
+    </div>` : ''}
+    <div style="margin-left:auto;align-self:center">
+      <span style="font-size:10px;color:var(--muted)">Model: claude-sonnet-4-6 · $3/$15 per MTok</span>
+    </div>`;
 }
 
 // Fetch all tickers in parallel with a concurrency limit
