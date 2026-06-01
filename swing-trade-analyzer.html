@@ -376,10 +376,25 @@ window.addEventListener('DOMContentLoaded', () => {
   if (window.location.protocol === 'file:') {
     document.getElementById('fileBanner').style.display = 'block';
   }
+
+  // Wire up ticker input now that DOM is ready
+  tickerInput = document.getElementById('tickerInput');
+  if (tickerInput) {
+    tickerInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        const t = tickerInput.value.trim().toUpperCase().replace(/[^A-Z]/g, '');
+        addTicker(t);
+        tickerInput.value = '';
+      }
+    });
+  }
+
   loadKeys();
-  detectProxy(); // silent background check — result logged to debug panel
+  detectProxy();
   ['polygonKey','anthropicKey'].forEach(id => {
     const el = document.getElementById(id);
+    if (!el) return;
     el.addEventListener('input',  saveKeys);
     el.addEventListener('change', saveKeys);
     el.addEventListener('paste',  () => setTimeout(saveKeys, 50));
@@ -401,15 +416,7 @@ function dbg(msg, type = 'info') {
 
 // ── Tickers ───────────────────────────────────────────────────────────────────
 let tickers = [];
-const tickerInput = document.getElementById('tickerInput');
-tickerInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter' || e.key === ',') {
-    e.preventDefault();
-    const t = tickerInput.value.trim().toUpperCase().replace(/[^A-Z]/g, '');
-    addTicker(t);
-    tickerInput.value = '';
-  }
-});
+let tickerInput; // assigned in DOMContentLoaded
 
 function addTicker(t) {
   t = (t || '').toUpperCase().replace(/[^A-Z]/g, '');
@@ -423,6 +430,7 @@ function removeTicker(t) { tickers = tickers.filter(x => x !== t); renderTickers
 
 function renderTickers() {
   const wrap = document.getElementById('tickerTags');
+  if (!wrap) return;
   wrap.innerHTML = tickers.length
     ? tickers.map(t =>
         `<div class="ticker-tag"><span>${t}</span><span class="rm" onclick="removeTicker('${t}')">×</span></div>`
