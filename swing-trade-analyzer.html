@@ -557,11 +557,14 @@ function renderProgress() {
 function hideProgress() { document.getElementById('progressPanel').classList.remove('active'); }
 
 // ── API routing ───────────────────────────────────────────────────────────────
-// Detects proxy via /health check — works for localhost AND mobile on same WiFi.
-// Falls back to direct calls (desktop Chrome/Edge only from file://).
+// Polygon: always via proxy when available (CORS requires it on mobile)
+// Anthropic: always called DIRECTLY from the browser — bypasses Render's
+//            60-second proxy timeout. Anthropic supports direct browser access
+//            natively via the anthropic-dangerous-direct-browser-access header.
 
 const IS_FILE = window.location.protocol === 'file:';
-let USE_LOCAL_PROXY = false;
+let USE_LOCAL_PROXY = false;  // for Polygon only
+let IS_CLOUD = false;         // true when running on Render
 
 async function detectProxy() {
   try {
@@ -570,8 +573,9 @@ async function detectProxy() {
       const j = await r.json();
       if (j.ok) {
         USE_LOCAL_PROXY = true;
+        IS_CLOUD = !!j.cloud;
         const platform = j.platform === 'render' ? '☁ Render' : j.cloud ? '☁ Cloud' : '⚙ Local server';
-        dbg(`✓ Proxy active (${platform}) — all API calls routed via server.js`, 'ok');
+        dbg(`✓ Proxy active (${platform}) — Polygon via proxy, Anthropic direct`, 'ok');
         const el = document.getElementById('lastUpdated');
         if (el) el.textContent = `${platform} — ready`;
         document.getElementById('fileBanner').style.display = 'none';
@@ -580,8 +584,9 @@ async function detectProxy() {
     }
   } catch(e) {}
   USE_LOCAL_PROXY = false;
+  IS_CLOUD = false;
   if (IS_FILE) {
-    dbg('ℹ No proxy — direct API calls (works on desktop Chrome/Edge). For mobile: run node server.js and open the Network URL shown in your terminal.');
+    dbg('ℹ No proxy — direct API calls (works on desktop Chrome/Edge).');
   } else {
     dbg('ℹ No proxy — direct API calls.');
   }
@@ -589,6 +594,7 @@ async function detectProxy() {
 
 async function polyGet(path) {
   const sep = path.includes('?') ? '&' : '?';
+  // Polygon: use proxy if available (mobile needs it for CORS), else direct
   const url = USE_LOCAL_PROXY
     ? `/proxy/polygon${path}${sep}apiKey=${POLY_KEY}`
     : `https://api.polygon.io${path}${sep}apiKey=${POLY_KEY}`;
@@ -604,9 +610,10 @@ async function polyGet(path) {
 }
 
 async function anthropicFetch(payload) {
-  const endpoint = USE_LOCAL_PROXY
-    ? '/proxy/anthropic'
-    : 'https://api.anthropic.com/v1/messages';
+  // Anthropic: ALWAYS direct from browser — never via proxy.
+  // This avoids Render's 60s HTTP timeout entirely.
+  // Anthropic's own CORS policy allows this with the special header below.
+  const endpoint = 'https://api.anthropic.com/v1/messages';
   const headers = {
     'Content-Type': 'application/json',
     'x-api-key': ANTH_KEY,
@@ -906,7 +913,7 @@ async function runAnalysis() {
   dbg(`Starting analysis for: ${tickers.join(', ')}`);
   dbg(`Polygon key: ${POLY_KEY.slice(0,8)}… | Anthropic key: ${ANTH_KEY.slice(0,12)}…`);
   await detectProxy();
-  dbg(`Routing: ${USE_LOCAL_PROXY ? '✓ local proxy (server.js)' : IS_FILE ? '⚠ direct from file:// — mobile may fail, run node server.js for mobile support' : 'direct http'}`);
+  dbg(`Routing: Polygon=${USE_LOCAL_PROXY ? 'proxy' : 'direct'} | Anthropic=direct (bypasses timeout)`);
 
   // Warn if too many tickers on Render — AI response may timeout
   if (USE_LOCAL_PROXY && tickers.length > 5) {
