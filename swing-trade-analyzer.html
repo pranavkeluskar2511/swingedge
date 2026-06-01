@@ -1070,31 +1070,37 @@ function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
 // ── Build AI prompt ───────────────────────────────────────────────────────────
 // Pre-analysis engine handles all math. Claude only writes narrative notes.
+// keyDetails removed (redundant — Polygon data shown directly in UI).
+// Strict word caps enforced with concrete examples.
 function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
   const holdLabel = { short: '3–5 days', medium: '1–3 weeks', long: '4–8 weeks' }[holdPeriod] || holdPeriod;
 
   const stockLines = stocks.map(s => {
     const pa = preAnalyse(s, holdPeriod, parseFloat(minRR));
-    if (!pa) return `TICKER: ${s.ticker} | STATUS: no price data — skip`;
+    if (!pa) return `${s.ticker}: skip no price`;
     return [
-      `TICKER: ${s.ticker} | ${s.companyName} | ${s.sector||'n/a'} | MCap: ${s.marketCap||'n/a'}`,
-      `SCORES (fixed): verdict=${pa.verdict} overall=${pa.scores.overall} rr=${pa.actualRR}`,
-      `  Setup=${pa.scores.setup} Technical=${pa.scores.technical} Fundamental=${pa.scores.fundamental} Risk=${pa.scores.risk} Plan=${pa.scores.plan}`,
-      `PRICES (fixed): entry=$${pa.entry} target=$${pa.target}(${pa.upside},${pa.targetBasis}) stop=$${pa.stop}(${pa.stopPct})`,
-      `CONTEXT: price=$${s.price}(${s.priceSource}) RSI=${s.rsi14??'n/a'} MACD=${s.macd??'n/a'} ATR=$${s.atr14??'n/a'} trend=${s.trend}`,
-      `  MA50=$${s.ma50??'n/a'} MA200=$${s.ma200??'n/a'} resist=$${s.priorResistance??'n/a'} support=$${s.priorSupport??'n/a'} vol=${s.volRatio??'n/a'}x`,
+      `${s.ticker}|${s.companyName}|${s.sector||'n/a'}`,
+      `SCORES: v=${pa.verdict} ov=${pa.scores.overall} rr=${pa.actualRR} S=${pa.scores.setup} T=${pa.scores.technical} F=${pa.scores.fundamental} R=${pa.scores.risk} P=${pa.scores.plan}`,
+      `PRICES: e=$${pa.entry} t=$${pa.target}(${pa.upside}) s=$${pa.stop}(${pa.stopPct}) basis=${pa.targetBasis}`,
+      `CTX: $${s.price} RSI=${s.rsi14??'?'} MACD=${s.macd??'?'} ATR=${s.atr14??'?'} ${s.trend} resist=$${s.priorResistance??'?'} vol=${s.volRatio??'?'}x`,
     ].join('\n');
   }).join('\n---\n');
 
-  return `Write short swing trade notes. ALL numbers are pre-calculated — copy them exactly, do not change any scores or prices.
+  return `Write ultra-short swing trade notes. Copy all numbers exactly — do not change scores or prices.
+Hold=${holdLabel} Regime=${regime}
 
-Hold=${holdLabel} | Risk=${riskPct}% | Regime=${regime}
+STRICT LIMITS:
+- layer note: 6 words max. Good: "RSI 59 near resistance". Bad: "RSI is at 59.3 which is approaching a resistance level".
+- entryNote: 10 words max. Good: "Buy breakout above $445 on volume".
+- exitNote: 10 words max. Good: "Scale 50% at $468 trail remainder".
+- stopNote: 10 words max. Good: "Stop below $430 prior support level".
+No full sentences. No punctuation except $ %.
 
 ${stockLines}
 
-Return ONLY a JSON array. No markdown. Copy all numbers exactly from SCORES and PRICES above.
-Schema: {"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"","overallScore":0,"rr":"0.0","upside":"","stopPct":"","targetBasis":"","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"keyDetails":{"pattern":"","trend":"","rsi":"","macd":"","volume":"","atr":"","sector":""},"entryNote":"","exitNote":"","stopNote":""}
-Notes max 10 words each. entryNote/exitNote/stopNote max 15 words each.`;
+Return ONLY a JSON array. No markdown fences.
+Schema (copy numbers exactly from SCORES/PRICES, fill notes only):
+{"ticker":"","companyName":"","currentPrice":0,"entryPrice":0,"targetPrice":0,"stopPrice":0,"verdict":"","overallScore":0,"rr":"0.0","upside":"","stopPct":"","targetBasis":"","layers":[{"name":"Setup quality","score":0,"note":""},{"name":"Tech confirmation","score":0,"note":""},{"name":"Fundamental","score":0,"note":""},{"name":"Risk parameters","score":0,"note":""},{"name":"Entry/exit plan","score":0,"note":""}],"entryNote":"","exitNote":"","stopNote":""}`;
 }
 
 // ── Robust JSON parser ────────────────────────────────────────────────────────
@@ -1561,7 +1567,6 @@ function renderResults(results) {
   let analysisCards = '';
   results.forEach((r,i) => {
     const live = r._live || {};
-    const kd   = r.keyDetails || {};
     const vc   = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
     const vl   = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
     const isLive    = live.priceIsLive;
@@ -1588,24 +1593,25 @@ function renderResults(results) {
       </div>`;
     });
 
-    // Market + technicals kv
+    // Market + technicals kv — all sourced from Polygon live data
     const mkt = [
       ['Price',       priceDisplay],
       ['Price source', live.priceSource || '—'],
       ['Volume',      isLive && live.volume ? live.volume.toLocaleString()+(live.volRatio?` (${live.volRatio}x avg)`:'') : '—'],
       ['52w range',   live.wk52Lo&&live.wk52Hi ? `$${live.wk52Lo} – $${live.wk52Hi}` : '—'],
       ['Mkt cap',     live.marketCap||'—'],
-      ['Sector',      live.sector||kd.sector||'—'],
+      ['Sector',      live.sector||'—'],
     ];
     const tech = [
-      ['RSI (14)',  live.rsi14!=null ? `${live.rsi14}${live.rsi14>70?' ↑OB':live.rsi14<30?' ↓OS':''}` : (kd.rsi||'—')],
-      ['MACD',     live.macd!=null  ? `${live.macd>0?'+':''}${live.macd}` : (kd.macd||'—')],
+      ['RSI (14)',  live.rsi14!=null ? `${live.rsi14}${live.rsi14>70?' ↑OB':live.rsi14<30?' ↓OS':''}` : '—'],
+      ['MACD',     live.macd!=null  ? `${live.macd>0?'+':''}${live.macd}` : '—'],
       ['MA 20',    live.ma20  ? `$${fmt(live.ma20)}`  : '—'],
       ['MA 50',    live.ma50  ? `$${fmt(live.ma50)} ${live.price>live.ma50?'↑':'↓'}` : '—'],
       ['MA 200',   live.ma200 ? `$${fmt(live.ma200)} ${live.price>live.ma200?'↑':'↓'}` : '—'],
-      ['ATR (14)', live.atr14 ? `$${live.atr14}` : (kd.atr||'—')],
-      ['Trend',    live.trend||kd.trend||'—'],
-      ['Pattern',  kd.pattern||'—'],
+      ['ATR (14)', live.atr14 ? `$${live.atr14}` : '—'],
+      ['Trend',    live.trend||'—'],
+      ['Prior resist', live.priorResistance ? `$${live.priorResistance}` : '—'],
+      ['Prior support', live.priorSupport ? `$${live.priorSupport}` : '—'],
     ];
 
     const kvRows = arr => arr.filter(([,v])=>v&&v!=='—')
@@ -1743,7 +1749,7 @@ function exportData(format) {
     'Current Price', 'Price Source', 'Day Change %',
     'Entry', 'Target', 'Stop',
     'RSI (14)', 'MACD', 'MA 20', 'MA 50', 'MA 200', 'ATR (14)',
-    'Trend', 'Pattern', 'Sector', 'Market Cap',
+    'Trend', 'Prior Resistance', 'Prior Support', 'Sector', 'Market Cap',
     'Volume', 'Volume vs Avg', '52w Low', '52w High',
     'Layer 1 – Setup quality (score)', 'Layer 1 note',
     'Layer 2 – Tech confirmation (score)', 'Layer 2 note',
@@ -1754,8 +1760,7 @@ function exportData(format) {
   ];
 
   const analysisRows = _lastResults.map(r => {
-    const live = r._live || {};
-    const kd   = r.keyDetails || {};
+    const live   = r._live || {};
     const layers = r.layers || [];
     const lv = n => layers[n]?.score ?? '';
     const ln = n => layers[n]?.note  ?? '';
@@ -1771,15 +1776,16 @@ function exportData(format) {
       r.entryPrice  || '',
       r.targetPrice || '',
       r.stopPrice   || '',
-      live.rsi14  != null ? live.rsi14  : (kd.rsi  || ''),
-      live.macd   != null ? live.macd   : (kd.macd || ''),
+      live.rsi14  != null ? live.rsi14  : '',
+      live.macd   != null ? live.macd   : '',
       live.ma20   != null ? live.ma20   : '',
       live.ma50   != null ? live.ma50   : '',
       live.ma200  != null ? live.ma200  : '',
-      live.atr14  != null ? live.atr14  : (kd.atr  || ''),
-      live.trend  || kd.trend   || '',
-      kd.pattern  || '',
-      live.sector || kd.sector  || '',
+      live.atr14  != null ? live.atr14  : '',
+      live.trend  || '',
+      live.priorResistance || '',
+      live.priorSupport    || '',
+      live.sector    || '',
       live.marketCap || '',
       live.volume    || '',
       live.volRatio  != null ? live.volRatio + 'x' : '',
