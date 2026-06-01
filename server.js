@@ -1,15 +1,15 @@
 /**
  * SwingEdge — Server
- * Works locally AND on Railway (or any Node.js host).
+ * Works locally AND on Render (or any Node.js host).
  *
  * LOCAL:
  *   node server.js
  *   Desktop → http://localhost:3000
  *   Mobile  → http://<your-local-ip>:3000  (same WiFi)
  *
- * RAILWAY (cloud):
- *   Push to GitHub → connect Railway → done.
- *   Access from anywhere at your Railway URL.
+ * RENDER (cloud):
+ *   Push to GitHub → connect Render → done.
+ *   Access from anywhere at your Render URL.
  */
 
 const http  = require('http');
@@ -19,9 +19,9 @@ const path  = require('path');
 const url   = require('url');
 const os    = require('os');
 
-// Railway injects PORT via env; fall back to 3000 locally
+// Render injects PORT via env; fall back to 3000 locally
 const PORT     = parseInt(process.env.PORT || '3000', 10);
-const IS_CLOUD = !!process.env.RAILWAY_ENVIRONMENT || !!process.env.RENDER || !!process.env.PORT;
+const IS_CLOUD = !!(process.env.RENDER || process.env.RAILWAY_ENVIRONMENT || process.env.FLY_APP_NAME);
 const HTML_FILE = path.join(__dirname, 'swing-trade-analyzer.html');
 
 // ── Local network IP (only useful when running locally) ───────────────────────
@@ -89,19 +89,21 @@ function printStartup() {
   console.log('');
   if (IS_CLOUD) {
     console.log('  ╔══════════════════════════════════════════════════╗');
-    console.log('  ║   SwingEdge — Running on Cloud                   ║');
-    console.log(`  ║   Port: ${String(PORT).padEnd(43)}║`);
-    console.log('  ║   Access via your Railway URL                    ║');
+    console.log('  ║   SwingEdge — Running on Render                  ║');
+    console.log(`  ║   Port : ${String(PORT).padEnd(42)}║`);
+    console.log('  ║   Access via your Render URL                     ║');
     console.log('  ╚══════════════════════════════════════════════════╝');
   } else {
+    const pad = (s, n) => String(s).padEnd(n);
     console.log('  ╔══════════════════════════════════════════════════╗');
     console.log('  ║   SwingEdge — Local Server                       ║');
-    console.log(`  ║   Desktop : http://localhost:${PORT}${' '.repeat(Math.max(0,20-String(PORT).length))}║`);
+    console.log(`  ║   Desktop : http://localhost:${pad(PORT, 21)}║`);
     if (localIP) {
-      console.log(`  ║   Mobile  : http://${localIP}:${PORT}${' '.repeat(Math.max(0,29-localIP.length-String(PORT).length))}║`);
+      const mobileUrl = `http://${localIP}:${PORT}`;
+      console.log(`  ║   Mobile  : ${pad(mobileUrl, 38)}║`);
       console.log('  ║   (phone must be on same WiFi)                   ║');
     }
-    console.log('  ║   Press Ctrl+C to stop                           ║');
+    console.log('  ║   Ctrl+C to stop                                 ║');
     console.log('  ╚══════════════════════════════════════════════════╝');
   }
   console.log('');
@@ -111,13 +113,13 @@ function printStartup() {
 const server = http.createServer(async (req, res) => {
   const { pathname, search } = new URL(req.url, `http://localhost:${PORT}`);
 
-  // CORS — allow everything
+  // CORS — allow everything (needed for mobile browsers calling the proxy)
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', '*');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
-  // ── /proxy/polygon/* → api.polygon.io ────────────────────────────────────
+  // ── /proxy/polygon/* → api.polygon.io ─────────────────────────────────────
   if (pathname.startsWith('/proxy/polygon/')) {
     const polyPath = pathname.replace('/proxy/polygon', '') + (search || '');
     console.log(`[polygon] ${polyPath.split('?')[0]}`);
@@ -125,7 +127,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── /proxy/anthropic → api.anthropic.com/v1/messages ─────────────────────
+  // ── /proxy/anthropic → api.anthropic.com/v1/messages ──────────────────────
   if (pathname === '/proxy/anthropic') {
     const body = await readBody(req);
     console.log(`[anthropic] ${body.length} bytes`);
@@ -133,22 +135,22 @@ const server = http.createServer(async (req, res) => {
       'https://api.anthropic.com/v1/messages',
       'POST',
       {
-        'x-api-key':           req.headers['x-api-key'] || '',
-        'anthropic-version':   req.headers['anthropic-version'] || '2023-06-01',
-        'Content-Length':      body.length
+        'x-api-key':          req.headers['x-api-key'] || '',
+        'anthropic-version':  req.headers['anthropic-version'] || '2023-06-01',
+        'Content-Length':     body.length
       },
       body, res
     );
     return;
   }
 
-  // ── /health — used by browser to detect proxy mode ────────────────────────
+  // ── /health — browser uses this to detect proxy mode ──────────────────────
   if (pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    return res.end(JSON.stringify({ ok: true, version: '2.0', cloud: IS_CLOUD }));
+    return res.end(JSON.stringify({ ok: true, version: '2.0', cloud: IS_CLOUD, platform: process.env.RENDER ? 'render' : IS_CLOUD ? 'cloud' : 'local' }));
   }
 
-  // ── Serve HTML ────────────────────────────────────────────────────────────
+  // ── Serve HTML ─────────────────────────────────────────────────────────────
   if (pathname === '/' || pathname === '/index.html' || pathname.endsWith('.html')) {
     try {
       const html = fs.readFileSync(HTML_FILE, 'utf8');
@@ -164,5 +166,5 @@ const server = http.createServer(async (req, res) => {
   res.end('Not found');
 });
 
-// Bind to 0.0.0.0 so both localhost AND local network IP work
+// Bind 0.0.0.0 so both localhost AND local network IP work
 server.listen(PORT, '0.0.0.0', printStartup);
