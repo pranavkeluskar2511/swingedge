@@ -72,6 +72,7 @@ header{display:flex;align-items:flex-end;justify-content:space-between;margin-bo
 .ticker-tag:hover{border-color:var(--accent)}
 .ticker-tag .rm{color:var(--muted);cursor:pointer;font-size:13px;line-height:1}
 .ticker-tag .rm:hover{color:var(--bear)}
+.ticker-saved-badge{background:rgba(13,158,122,.08);border-color:rgba(13,158,122,.25);gap:8px}
 
 .params-row{display:flex;gap:14px;flex-wrap:wrap;margin-top:14px}
 .param-group{display:flex;flex-direction:column;gap:5px;min-width:130px}
@@ -441,6 +442,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   loadKeys();
+  loadTickers();
   detectProxy();
   ['polygonKey','anthropicKey'].forEach(id => {
     const el = document.getElementById(id);
@@ -465,18 +467,42 @@ function dbg(msg, type = 'info') {
 }
 
 // ── Tickers ───────────────────────────────────────────────────────────────────
+const TICKERS_KEY = 'swingedge_watchlist';
 let tickers = [];
 let tickerInput; // assigned in DOMContentLoaded
 
+function saveTickers() {
+  try { localStorage.setItem(TICKERS_KEY, JSON.stringify(tickers)); } catch(e) {}
+}
+
+function loadTickers() {
+  try {
+    const saved = localStorage.getItem(TICKERS_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        tickers = parsed.filter(t => /^[A-Z]{1,6}$/.test(t)).slice(0, 30);
+        renderTickers();
+        setXLStatus(`✓ Watchlist loaded — ${tickers.length} tickers`);
+      }
+    }
+  } catch(e) {}
+}
+
 function addTicker(t) {
   t = (t || '').toUpperCase().replace(/[^A-Z]/g, '');
-  if (t && !tickers.includes(t) && tickers.length < 20) {
+  if (t && !tickers.includes(t) && tickers.length < 30) {
     tickers.push(t);
     renderTickers();
+    saveTickers();
   }
 }
 
-function removeTicker(t) { tickers = tickers.filter(x => x !== t); renderTickers(); }
+function removeTicker(t) {
+  tickers = tickers.filter(x => x !== t);
+  renderTickers();
+  saveTickers();
+}
 
 function renderTickers() {
   const wrap = document.getElementById('tickerTags');
@@ -485,13 +511,19 @@ function renderTickers() {
     ? tickers.map(t =>
         `<div class="ticker-tag"><span>${t}</span><span class="rm" onclick="removeTicker('${t}')">×</span></div>`
       ).join('') +
-      (tickers.length > 1
-        ? `<div class="ticker-tag" style="cursor:pointer;color:var(--bear);border-color:rgba(255,77,106,.3)" onclick="clearAllTickers()">✕ clear all</div>`
-        : '')
-    : '';
+      `<div class="ticker-tag ticker-saved-badge">
+        <span style="color:var(--bull)">✓ ${tickers.length} saved</span>
+        <span class="rm" style="color:var(--bear)" onclick="clearAllTickers()">✕ clear</span>
+      </div>`
+    : `<div style="font-size:11px;color:var(--dim);padding:4px 0">Your watchlist auto-saves — tickers persist between sessions</div>`;
 }
 
-function clearAllTickers() { tickers = []; renderTickers(); setXLStatus(''); }
+function clearAllTickers() {
+  tickers = [];
+  renderTickers();
+  saveTickers();
+  setXLStatus('');
+}
 
 // ── Excel / CSV upload ────────────────────────────────────────────────────────
 function handleXLUpload(input) {
@@ -525,16 +557,17 @@ function handleXLUpload(input) {
         return;
       }
 
-      // Merge with existing, dedupe, cap at 20
+      // Merge with existing, dedupe, cap at 30
       const before = tickers.length;
-      found.forEach(t => { if (!tickers.includes(t) && tickers.length < 20) tickers.push(t); });
+      found.forEach(t => { if (!tickers.includes(t) && tickers.length < 30) tickers.push(t); });
       const added = tickers.length - before;
       const skipped = found.length - added;
 
       renderTickers();
+      saveTickers();
       let msg = `✓ Loaded ${added} ticker${added!==1?'s':''} from ${file.name}`;
       if (skipped > 0) msg += ` · ${skipped} duplicate${skipped!==1?'s':''}/over-limit skipped`;
-      if (tickers.length >= 20) msg += ' · 20-ticker limit reached';
+      if (tickers.length >= 30) msg += ' · 30-ticker limit reached';
       setXLStatus(msg);
     } catch(err) {
       setXLStatus('Could not parse file: ' + err.message, 'error');
