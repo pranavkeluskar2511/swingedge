@@ -1101,7 +1101,10 @@ function calcATR(bars, period = 14) {
 
 // ── Fetch all data for one ticker ─────────────────────────────────────────────
 async function fetchTickerData(ticker) {
-  const today   = prevTradingDay(1);
+  // Always use today's actual calendar date as the bar end.
+  // Polygon returns today's partial intraday bar during market hours when
+  // today's date is passed — using prevTradingDay(1) was skipping today's session.
+  const today   = localDateStr(new Date());
   const from90  = nDaysAgo(100);
   const from365 = nDaysAgo(380);
   dbg(`${ticker}: fetching bars ${from90} → ${today}`);
@@ -1169,7 +1172,9 @@ async function fetchTickerData(ticker) {
   } else {
     price       = lastClosePrice || 0;
     priceIsLive = false; priceIsClose = true; priceIsExt = false;
-    priceSource = `last close ${prevTradingDay(1)}`;
+    // Show the actual date of the last bar, not a computed prev trading day
+    const lastBarDate = lastBar.t ? localDateStr(new Date(lastBar.t)) : prevTradingDay(1);
+    priceSource = `last close ${lastBarDate}`;
   }
 
   const changePct = (price && prevClose)
