@@ -837,20 +837,41 @@ async function fetchTickerData(ticker) {
   // prevSessionClose = last regular session close (for gap measurement)
   const prevSessionClose = lastBar.c || snap?.prevDay?.c || 0;
 
-  // Gap % = how much price has moved from prev regular close
-  // Meaningful for pre-market and at market open
-  const gapPct = (price && prevSessionClose && (priceIsExt || isPreMkt || isRegular))
-    ? +((price - prevSessionClose) / prevSessionClose * 100).toFixed(2)
-    : null;
+  // ── Gap analysis ──────────────────────────────────────────────────────────
+  // Gap is only meaningful when comparing pre-market price to prior close.
+  // We compute it from pre-market bars first, then fall back to extended price.
+  // During regular session: use today's open vs prev close if available.
+  const todayOpen = snap?.day?.o || null;
 
-  // Gap direction signal
+  // Best gap reference: pre-mkt last price → prev close
+  // If no pre-mkt bars, use today's open vs prev close (classic gap definition)
+  let gapPct = null;
+  let gapRef = null; // what price we used for gap
+
+  // After hours: extended price vs prev close
+  if (isPostMkt && extPrice && prevSessionClose) {
+    gapRef  = extPrice;
+    gapPct  = +((extPrice - prevSessionClose) / prevSessionClose * 100).toFixed(2);
+  }
+  // Pre-market: extended price vs prev close
+  else if (isPreMkt && extPrice && prevSessionClose) {
+    gapRef  = extPrice;
+    gapPct  = +((extPrice - prevSessionClose) / prevSessionClose * 100).toFixed(2);
+  }
+  // Regular session or fallback: today's open vs prev close (gap at open)
+  else if (todayOpen && prevSessionClose) {
+    gapRef  = todayOpen;
+    gapPct  = +((todayOpen - prevSessionClose) / prevSessionClose * 100).toFixed(2);
+  }
+
+  // Gap direction signal — thresholds apply to all session types
   let gapSignal = null;
   if (gapPct !== null) {
-    if      (gapPct >=  2) gapSignal = 'gap-up-strong';     // ≥2% gap up
-    else if (gapPct >=  0.5) gapSignal = 'gap-up';           // 0.5–2% gap up
-    else if (gapPct <= -2) gapSignal = 'gap-down-strong';    // ≥2% gap down — potential buy-the-dip
-    else if (gapPct <= -0.5) gapSignal = 'gap-down';          // 0.5–2% gap down
-    else                    gapSignal = 'flat';
+    if      (gapPct >=  2)   gapSignal = 'gap-up-strong';
+    else if (gapPct >=  0.5) gapSignal = 'gap-up';
+    else if (gapPct <= -2)   gapSignal = 'gap-down-strong';
+    else if (gapPct <= -0.5) gapSignal = 'gap-down';
+    else                     gapSignal = 'flat';
   }
 
   // Pre-market high/low from minute bars (useful for support/resistance at open)
@@ -945,9 +966,10 @@ async function fetchTickerData(ticker) {
     price: price ? +price.toFixed(2) : 0,
     prevClose: prevClose ? +prevClose.toFixed(2) : 0,
     prevSessionClose: prevSessionClose ? +prevSessionClose.toFixed(2) : 0,
+    todayOpen: todayOpen ? +todayOpen.toFixed(2) : null,
     changePct, priceSource, priceIsLive, priceIsClose, priceIsExt,
     isPreMkt, isPostMkt, isRegular,
-    gapPct, gapSignal,
+    gapPct, gapSignal, gapRef: gapRef ? +parseFloat(gapRef).toFixed(2) : null,
     preMktHigh, preMktLow, preMktVol,
     postMktHigh, postMktLow,
     volume, avgVol20, volRatio,
@@ -1045,12 +1067,12 @@ function preAnalyse(s, holdPeriod, minRR) {
 
   // ── Layer 4: Risk parameters (0–100) ────────────────────────────────────
   let l4 = 50;
-  // ATR as % of price — 1–5% is the sweet spot for swing trades
+  // ATR as % of price — 1–5% ideal, 5–10% neutral, >10% penalise
   if (p > 0) {
     const atrPct = (atr / p) * 100;
-    if      (atrPct >= 1 && atrPct <= 5) l4 += 25; // ideal — stop is manageable
-    else if (atrPct > 5 && atrPct <= 8)  l4 +=  0; // neutral — wide but workable
-    else if (atrPct > 8)                 l4 -= 15; // too volatile — stop too wide
+    if      (atrPct >= 1 && atrPct <= 5)  l4 += 25; // ideal — stop is manageable
+    else if (atrPct > 5  && atrPct <= 10) l4 +=  0; // neutral — wide but workable
+    else if (atrPct > 10)                 l4 -= 15; // too volatile — stop too wide
     else if (atrPct < 0.5)               l4 -= 10; // too tight — won't move enough
   }
   // Support cushion below entry
@@ -1169,7 +1191,7 @@ function preAnalyse(s, holdPeriod, minRR) {
   }
   if (p > 0 && atr > 0) {
     const atrPct = (atr / p) * 100;
-    if (atrPct > 8 && verdict === 'buy') verdict = 'watch'; // wide stop: cap at watch
+    if (atrPct > 10 && verdict === 'buy') verdict = 'watch'; // wide stop >10%: cap at watch
   }
   if (s.trend === 'downtrend' && verdict === 'buy') verdict = 'watch';
 
@@ -1257,9 +1279,9 @@ function generateNotes(s, pa) {
   if (p > 0 && atr > 0) {
     const atrPct = (atr / p * 100).toFixed(1);
     const atrNum = parseFloat(atrPct);
-    if      (atrNum >= 1 && atrNum <= 5) l4parts.push(`ATR ${atrPct}% ideal stop range`);
-    else if (atrNum > 5 && atrNum <= 8)  l4parts.push(`ATR ${atrPct}% wide — reduce size`);
-    else if (atrNum > 8)                 l4parts.push(`ATR ${atrPct}% too volatile`);
+    if      (atrNum >= 1 && atrNum <= 5)  l4parts.push(`ATR ${atrPct}% ideal stop range`);
+    else if (atrNum > 5  && atrNum <= 10) l4parts.push(`ATR ${atrPct}% wide — reduce size`);
+    else if (atrNum > 10)                 l4parts.push(`ATR ${atrPct}% too volatile`);
     else                                 l4parts.push(`ATR ${atrPct}%`);
   }
   if (s.priorSupport && p > 0) {
@@ -1752,21 +1774,40 @@ function buildGapBadge(live) {
     lines.push(`<span class="ext-badge">${label} $${live.price}</span>`);
   }
 
-  // Gap badge
+  // Gap badge — show whenever we have a meaningful gap signal
   if (live.gapPct !== null && live.gapSignal && live.gapSignal !== 'flat') {
     const sign  = live.gapPct >= 0 ? '+' : '';
-    const cls   = live.gapSignal.replace('-strong','').replace('-','_') === 'gap_up' ? 'gap-up' : 'gap-down';
     const strong = live.gapSignal.includes('strong');
+
+    // Context label: what session the gap was measured from
+    const ctx = live.isPreMkt   ? 'pre-mkt'
+              : live.isPostMkt  ? 'after-hrs'
+              : 'open vs close';
+
     const label = live.gapPct >= 0
-      ? `▲ Gap Up ${sign}${live.gapPct}%${strong ? ' ⚡' : ''}`
-      : `▼ Gap Down ${live.gapPct}%${strong ? ' — dip??' : ''}`;
-    const badgeCls = live.gapSignal.replace('-','_').replace('gap_up_strong','gap-up-strong').replace('gap_up','gap-up').replace('gap_down_strong','gap-down-strong').replace('gap_down','gap-down');
+      ? `▲ Gap +${live.gapPct}% (${ctx})${strong ? ' ⚡' : ''}`
+      : `▼ Gap ${live.gapPct}% (${ctx})${strong ? ' — dip?' : ''}`;
+
+    // Map signal string to CSS class
+    const cssMap = {
+      'gap-up-strong':   'gap-up-strong',
+      'gap-up':          'gap-up',
+      'gap-down-strong': 'gap-down-strong',
+      'gap-down':        'gap-down',
+    };
+    const badgeCls = cssMap[live.gapSignal] || 'gap-up';
     lines.push(`<span class="gap-badge ${badgeCls}">${label}</span>`);
   }
 
-  // Pre-market range (useful before open)
-  if (live.isPreMkt && live.preMktHigh && live.preMktLow) {
-    lines.push(`<div style="font-size:9px;color:var(--muted);margin-top:2px">PM range: $${live.preMktLow}–$${live.preMktHigh}</div>`);
+  // Pre-market high/low range — always show if available (useful at open for S/R)
+  if (live.preMktHigh && live.preMktLow) {
+    const vol = live.preMktVol ? ` · ${(live.preMktVol/1000).toFixed(0)}k vol` : '';
+    lines.push(`<div style="font-size:9px;color:var(--muted);margin-top:2px">PM: $${live.preMktLow}–$${live.preMktHigh}${vol}</div>`);
+  }
+
+  // After-hours range
+  if (live.postMktHigh && live.postMktLow && live.isPostMkt) {
+    lines.push(`<div style="font-size:9px;color:var(--muted);margin-top:2px">AH: $${live.postMktLow}–$${live.postMktHigh}</div>`);
   }
 
   return lines.join('<br>');
