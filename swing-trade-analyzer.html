@@ -552,7 +552,7 @@ function dbg(msg, type = 'info') {
 // ── Multi-Watchlist Manager ───────────────────────────────────────────────────
 const WL_KEY         = 'swingedge_watchlists_v2';
 const WL_ACTIVE_KEY  = 'swingedge_active_wl';
-const MAX_TICKERS    = 50;
+const MAX_TICKERS    = 120;
 const MAX_WATCHLISTS = 8;
 
 // ── Preset watchlists bundled with the app ────────────────────────────────────
@@ -562,16 +562,62 @@ const PRESETS = {
     'INTC','MU','ARM','CDNS','SNPS','ASMIY','TSEM','ON','MCHP','TXN'
   ],
   'AI Infrastructure': [
-    'NVDA','AMD','AVGO','CRDO','ANET','VRT','SMCI','MRVL','ARM',
-    'AMZN','GOOGL','META','MSFT','ORCL','NOW','CRM','PLTR'
+    'NVDA','AMD','AVGO','CRDO','ANET','VRT','SMCI','MRVL','ARM','CBRS',
+    'AMZN','GOOGL','META','MSFT','ORCL','NOW','CRM','PLTR','DELL','HPE',
+    'ALAB','AMBA','INDI','MBLY','IBM','CSCO','NET','DOCN'
   ],
   'Semi Full': [
     'ASML','ARM','CDNS','SNPS','TSM','ASMIY','AMAT','PLAB','SLAB','RMBS',
     'UMC','INTC','SNDK','WDC','MU','MBLY','GFS','AVGO','MCHP','STM',
-    'NVDA','AMD','QCOM','MRVL','ON','LRCX','KLAC','TER','CRDO','MPWR'
+    'NVDA','AMD','QCOM','MRVL','ON','LRCX','KLAC','TER','CRDO','MPWR',
+    'CBRS','NXPI','ADI','TXN','SWKS','MTSI','LSCC','SMTC','CRUS','ALGM',
+    'MXL','ONTO','ACLS','AZTA','VECO','UCTT','ICHR','COHU','ENTG','WOLF',
+    'COHR','AXTI','AMKR','KLIC','TTMI','STX','CEVA','IDCC','RMBS'
   ],
-  'Mega-cap AI': [
-    'NVDA','AMD','AVGO','TSLA','AMZN','GOOGL','META','MSFT','ORCL','CRM'
+  'AI Software & Cloud': [
+    'MSFT','AAPL','AMZN','GOOGL','META','ORCL','IBM',
+    'PLTR','AI','CRM','ADBE','NOW','SNOW','DDOG','MDB','ESTC','HUBS','GTLB','RDDT',
+    'CRWD','PANW','ZS','S',
+    'TSLA','PATH','ROK','SYM','ISRG',
+    'NET','DOCN','ANET','CSCO','VRT'
+  ],
+  'Full Universe': [
+    // AI GPUs & Fabless
+    'NVDA','AMD','MRVL','QCOM','ARM','CBRS',
+    // Equipment
+    'AMAT','LRCX','KLAC','TER','ONTO','ACLS','ASML','AZTA','VECO','UCTT','ICHR','COHU','PLAB',
+    // EDA & IP
+    'SNPS','CDNS','RMBS','CEVA','IDCC',
+    // Memory & Storage
+    'MU','WDC','SNDK','STX',
+    // IDMs & Foundries
+    'INTC','AVGO','TSM','GFS','UMC','TSEM','TXN','ADI','ON','MCHP','NXPI','STM','MPWR','SWKS','MTSI','LSCC','SLAB','SMTC','CRUS','ALGM','MXL',
+    // Materials
+    'ENTG','WOLF','COHR','AXTI','MTRN',
+    // Packaging
+    'AMKR','KLIC','TTMI',
+    // Networking & Custom Silicon
+    'ALAB','CRDO','INDI','MBLY','AMBA',
+    // Servers
+    'SMCI','DELL','HPE',
+    // Cloud
+    'MSFT','AAPL','AMZN','GOOGL','ORCL','IBM','ANET','CSCO','VRT','DOCN','NET',
+    // AI Software
+    'PLTR','AI','CRM','ADBE','NOW','SNOW','DDOG','MDB','ESTC','HUBS','GTLB','RDDT',
+    // Cybersecurity
+    'CRWD','PANW','ZS','S',
+    // Robotics
+    'TSLA','PATH','ROK','SYM','ISRG',
+    // Quantum
+    'IONQ','RGTI','QUBT',
+    // Power & Data Centers
+    'APLD','CORZ','IREN','WULF','ETN','GEV','CEG','VST',
+    // Crypto
+    'COIN',
+    // Distribution
+    'ARW','AVT','SNX',
+    // ETFs
+    'SMH','SOXX','BOTZ'
   ],
 };
 
@@ -1701,8 +1747,8 @@ function parseJSON(raw) {
 }
 
 // ── Main run ──────────────────────────────────────────────────────────────────
-const BATCH_SIZE = 5;
-const POLY_CONCURRENCY = 5;
+const BATCH_SIZE = 6;        // 6 stocks per Claude call — eliminates 5+1 split waste
+const POLY_CONCURRENCY = 8;  // 8 parallel Polygon workers for faster 120-stock fetches
 let _isRunning = false; // guard against double-tap / double-click
 
 async function runAnalysis() {
