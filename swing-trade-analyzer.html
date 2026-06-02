@@ -2061,10 +2061,10 @@ function chunkArray(arr, size) {
 // ── Assemble full result object from JS data + Claude trade sentences ─────────
 function buildResult(live, pa, claudeRow) {
   const notes = generateNotes(live, pa);
-  // Tag with source watchlist when running all watchlists
-  const wlTag = (window._runningAllWL && window._tickerToWL)
-    ? (window._tickerToWL[live.ticker] || activeWL)
-    : activeWL;
+  // Tag with ALL source watchlists when running all watchlists
+  const wlTags = (window._runningAllWL && window._tickerToWL)
+    ? (window._tickerToWL[live.ticker] || [activeWL])
+    : [activeWL];
   return {
     ticker:       live.ticker,
     companyName:  live.companyName || live.ticker,
@@ -2078,7 +2078,8 @@ function buildResult(live, pa, claudeRow) {
     upside:       pa.upside,
     stopPct:      pa.stopPct,
     targetBasis:  pa.targetBasis,
-    _watchlist:   wlTag,
+    _watchlist:   wlTags[0],        // primary (for backward compat)
+    _watchlists:  wlTags,           // all memberships
     layers: [
       { name: 'Setup quality',     score: pa.scores.setup,       note: notes.setup       },
       { name: 'Tech confirmation', score: pa.scores.technical,   note: notes.technical   },
@@ -2357,11 +2358,13 @@ function renderResults(results) {
           : `<div class="t-chg" style="color:var(--dim)">No price data</div>`;
 
     const gapHtml = buildGapBadge(live);
-    const wlTag = r._watchlist
-      ? `<div style="font-size:8px;color:var(--dim);margin-top:2px;letter-spacing:.04em">${r._watchlist}</div>`
+    const wlList  = r._watchlists || (r._watchlist ? [r._watchlist] : []);
+    const wlTag   = wlList.length > 0
+      ? `<div style="font-size:8px;color:var(--dim);margin-top:2px;letter-spacing:.04em">${wlList.join(' · ')}</div>`
       : '';
+    const wlsJson = JSON.stringify(wlList).replace(/'/g,"\\'");
 
-    tableRows += `<tr data-wl="${r._watchlist||''}">
+    tableRows += `<tr data-wls='${wlsJson}'>
       <td>
         <div class="t-ticker">${r.ticker}</div>
         <div class="t-name">${r.companyName||''}</div>
@@ -2472,7 +2475,7 @@ function renderResults(results) {
       .map(([l,v])=>`<div class="kv"><span class="kv-l">${l}</span><span class="kv-r">${v}</span></div>`).join('');
 
     analysisCards += `
-    <div class="a-card" data-wl="${r._watchlist||''}">  
+    <div class="a-card" data-wls='${JSON.stringify(r._watchlists||[r._watchlist||""])}'>  
       <div class="a-card-header">
         <div class="a-left">
           <div class="a-ticker">${r.ticker}</div>
@@ -2522,7 +2525,7 @@ function renderResults(results) {
       <span class="wl-filter-label">Filter:</span>
       <div class="wl-filter-tab active" onclick="filterByWL('__all__')">All (${results.length})</div>
       ${wlNames.map(wl => {
-        const count = results.filter(r => r._watchlist === wl).length;
+        const count = results.filter(r => (r._watchlists||[r._watchlist||'']).includes(wl)).length;
         return `<div class="wl-filter-tab" onclick="filterByWL('${wl.replace(/'/g,"\\'")}')">${wl} (${count})</div>`;
       }).join('')}
     </div>` : '';
@@ -2572,21 +2575,24 @@ function switchView(n) {
 
 // ── Watchlist filter in results ───────────────────────────────────────────────
 function filterByWL(wlName) {
-  // Update filter tab active state
+  // Update filter tab highlights
   document.querySelectorAll('.wl-filter-tab').forEach(el => {
-    const isAll = wlName === '__all__' && el.textContent.startsWith('All');
-    const isMatch = el.onclick?.toString().includes(`'${wlName}'`) || isAll;
-    el.classList.toggle('active', el.textContent.startsWith('All') ? wlName==='__all__' : el.getAttribute('onclick')?.includes(wlName));
+    const onclick = el.getAttribute('onclick') || '';
+    const isAll   = onclick.includes('__all__');
+    const isMatch = isAll ? wlName === '__all__' : onclick.includes(`'${wlName}'`);
+    el.classList.toggle('active', isMatch);
   });
 
-  // Show/hide trade table rows
-  document.querySelectorAll('#rview-1 tr[data-wl]').forEach(row => {
-    row.style.display = (wlName === '__all__' || row.dataset.wl === wlName) ? '' : 'none';
+  // Show/hide trade table rows — check _watchlists array
+  document.querySelectorAll('#rview-1 tr[data-wls]').forEach(row => {
+    const wls = JSON.parse(row.dataset.wls || '[]');
+    row.style.display = (wlName === '__all__' || wls.includes(wlName)) ? '' : 'none';
   });
 
   // Show/hide analysis cards
-  document.querySelectorAll('#rview-2 .a-card[data-wl]').forEach(card => {
-    card.style.display = (wlName === '__all__' || card.dataset.wl === wlName) ? '' : 'none';
+  document.querySelectorAll('#rview-2 .a-card[data-wls]').forEach(card => {
+    const wls = JSON.parse(card.dataset.wls || '[]');
+    card.style.display = (wlName === '__all__' || wls.includes(wlName)) ? '' : 'none';
   });
 }
 
@@ -2599,16 +2605,19 @@ async function runAllWatchlists() {
   const allWLNames = Object.keys(watchlists).filter(n => watchlists[n].length > 0);
   if (allWLNames.length === 0) { alert('No watchlists have tickers.'); return; }
 
-  // Build a deduplicated ticker list, remembering which WL each ticker belongs to
-  const tickerToWL = {};  // ticker → first watchlist it appears in
+  // Build deduplicated ticker list
+  // tickerToWL maps ticker → ALL watchlists it belongs to (array)
+  // so AMD in Semi Core + AI Infrastructure + Mega-cap AI shows under all three filters
+  const tickerToWL = {};  // ticker → [wlName, ...]
   const uniqueTickers = [];
   allWLNames.forEach(wlName => {
     (watchlists[wlName] || []).forEach(t => {
       if (!tickerToWL[t]) {
-        tickerToWL[t] = wlName;
-        uniqueTickers.push(t);
+        tickerToWL[t] = [wlName];
+        uniqueTickers.push(t);          // only add to fetch list once
+      } else {
+        tickerToWL[t].push(wlName);     // record all memberships, no extra fetch
       }
-      // If in multiple WLs, tag with the first one (primary membership)
     });
   });
 
@@ -2616,7 +2625,7 @@ async function runAllWatchlists() {
   const totalRaw    = allWLNames.reduce((s, n) => s + watchlists[n].length, 0);
   const dupes       = totalRaw - totalUnique;
 
-  dbg(`Run All Watchlists: ${allWLNames.length} watchlists · ${totalUnique} unique tickers (${dupes} deduplicated)`);
+  dbg(`Run All Watchlists: ${allWLNames.length} watchlists · ${totalUnique} unique tickers (${dupes} deduplicated — fetched & scored once each)`);
 
   // Temporarily replace the active ticker list with the combined unique list
   const savedActiveWL = activeWL;
