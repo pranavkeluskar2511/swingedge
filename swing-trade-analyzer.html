@@ -1156,23 +1156,21 @@ function preAnalyse(s, holdPeriod, minRR) {
   );
 
   // ── Verdict ─────────────────────────────────────────────────────────────
+  // Thresholds aligned with Claude filter (≥80 = Claude, ≥75 = Buy, 45-74 = Watch)
   let verdict = 'avoid';
-  if      (overallScore >= 65 && actualRR >= minRR) verdict = 'buy';
-  else if (overallScore >= 45 || actualRR >= minRR) verdict = 'watch';
+  if      (overallScore >= 75 && actualRR >= minRR) verdict = 'buy';   // high conviction
+  else if (overallScore >= 45 || actualRR >= minRR) verdict = 'watch'; // monitor
 
   // ── Hard overrides — these trump the score regardless ───────────────────
-  // RSI overbought: no new longs into extended momentum
   if (rsi != null) {
     if (rsi > 80 && verdict === 'buy')   verdict = 'watch'; // RSI >80: cap at watch
     if (rsi > 80 && overallScore < 55)   verdict = 'avoid'; // RSI >80 + weak: avoid
     if (rsi > 75 && verdict === 'buy')   verdict = 'watch'; // RSI 75-80: cap at watch
   }
-  // ATR too wide: stop is unworkable for most position sizes
   if (p > 0 && atr > 0) {
     const atrPct = (atr / p) * 100;
     if (atrPct > 8 && verdict === 'buy') verdict = 'watch'; // wide stop: cap at watch
   }
-  // Downtrend: don't buy into falling prices
   if (s.trend === 'downtrend' && verdict === 'buy') verdict = 'watch';
 
   return {
