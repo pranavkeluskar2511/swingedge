@@ -1267,10 +1267,13 @@ async function runAnalysis() {
   // ── Token accumulator for this run ───────────────────────────────────────
   const runTokens = { input: 0, output: 0, batches: 0, failedBatches: 0 };
 
-  // Show initial progress panel
+  // Show initial progress panel — batch count calculated after pre-scoring
+  // so we use a placeholder that gets refined; simpler to just show flat steps
   initProgress([
     `Fetching Polygon data (${tickers.length} tickers in parallel)…`,
-    ...Array.from({length: numBatches}, (_,i) => `AI analysis — batch ${i+1} of ${numBatches} (${batchLabel(i, tickers)})`)
+    `Pre-scoring all stocks in JS…`,
+    `Claude writing trade plans for qualifying stocks…`,
+    `Building final results…`
   ]);
 
   // Clear results area and show streaming container
@@ -1293,20 +1296,52 @@ async function runAnalysis() {
 
     const stockData = await fetchAllParallel(tickers, POLY_CONCURRENCY);
     setStep(0, 'done');
+    setStep(1, 'active');
     dbg(`✓ Polygon fetch complete — ${stockData.filter(s=>s.price>0).length}/${tickers.length} with valid prices`, 'ok');
 
-    // ── Phase 2: AI analysis in batches of BATCH_SIZE ────────────────────────
-    const batches = chunkArray(stockData, BATCH_SIZE);
+    // ── Phase 2: Pre-score ALL stocks in JS — free, instant ─────────────────
+    const CLAUDE_SCORE_THRESHOLD = 80; // only send to Claude if score meets this
+    const minRRnum = parseFloat(minRR);
+
+    const preScored = stockData.map(s => ({
+      s,
+      pa: preAnalyse(s, holdPeriod, minRRnum)
+    })).filter(({ pa }) => pa !== null);
+
+    // Split into Claude-worthy vs JS-only
+    const forClaude  = preScored.filter(({ pa }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD);
+    const jsOnly     = preScored.filter(({ pa }) => pa.scores.overall <  CLAUDE_SCORE_THRESHOLD);
+
+    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}) | ${jsOnly.length} stocks → JS-only`, 'ok');
+
+    // Build JS-only results immediately — no API call needed
+    jsOnly.forEach(({ s, pa }) => {
+      allResults.push(buildResult(s, pa, { entryNote:'', exitNote:'', stopNote:'' }));
+    });
+    if (jsOnly.length > 0) {
+      dbg(`JS-only results built instantly: ${jsOnly.map(x=>x.s.ticker).join(', ')}`, 'ok');
+      renderStreamingResults(allResults, 0, Math.ceil(forClaude.length / BATCH_SIZE) || 1);
+    }
+
+    // ── Phase 3: Claude analysis — only for high-scoring stocks ─────────────
+    const claudeStocks = forClaude.map(({ s }) => s);
+    const batches = chunkArray(claudeStocks, BATCH_SIZE);
+
+    setStep(1, 'done');
+    setStep(2, 'active');
+    if (batches.length === 0) {
+      dbg(`No stocks met the score threshold — all results built from JS scoring`, 'ok');
+    }
 
     for (let b = 0; b < batches.length; b++) {
-      const batchStep = b + 1;
+      const batchStep = 2;
       setStep(batchStep, 'active');
       const bTickers = batches[b].map(s => s.ticker).join(', ');
-      setProgressTitle(`Claude analyzing batch ${b+1}/${batches.length}: ${bTickers}`);
+      setProgressTitle(`Claude writing trade plan ${b+1}/${batches.length}: ${bTickers}`);
       document.getElementById('batchStatus').textContent =
-        `Batch ${b+1} of ${batches.length} — analyzing ${bTickers}…`;
+        `Batch ${b+1} of ${batches.length} — writing trade plan for ${bTickers}…`;
 
-      dbg(`Batch ${b+1}/${batches.length}: sending ${batches[b].length} tickers to Claude…`);
+      dbg(`Batch ${b+1}/${batches.length}: sending ${batches[b].length} qualifying tickers to Claude…`);
 
       try {
         const prompt = buildPrompt(batches[b], holdPeriod, riskPct, minRR, regime);
@@ -1368,30 +1403,36 @@ async function runAnalysis() {
       setStep(batchStep, 'done');
     }
 
-    // ── Phase 3: Final render ─────────────────────────────────────────────────
+    // ── Phase 4: Final render ─────────────────────────────────────────────────
+    setStep(2, 'done');
+    setStep(3, 'active');
     hideProgress();
 
-    // ── Token / cost summary ─────────────────────────────────────────────
+    const claudeSent  = forClaude.length;
+    const jsOnlyCount = jsOnly.length;
+    const savedCalls  = jsOnlyCount;
+
     const runCost     = (runTokens.input * 3 / 1_000_000) + (runTokens.output * 15 / 1_000_000);
-    const tokPerStock = allResults.length
-      ? Math.round((runTokens.input + runTokens.output) / allResults.length)
+    const tokPerStock = claudeSent > 0
+      ? Math.round((runTokens.input + runTokens.output) / claudeSent)
       : 0;
     dbg(`─── RUN SUMMARY ───`, 'ok');
     dbg(`Input tokens : ${runTokens.input.toLocaleString()}  ($${(runTokens.input  * 3  / 1_000_000).toFixed(5)})`, 'ok');
     dbg(`Output tokens: ${runTokens.output.toLocaleString()}  ($${(runTokens.output * 15 / 1_000_000).toFixed(5)})`, 'ok');
-    dbg(`Total tokens : ${(runTokens.input+runTokens.output).toLocaleString()}  |  Cost: $${runCost.toFixed(5)}  |  ~${tokPerStock} tokens/stock`, 'ok');
+    dbg(`Total tokens : ${(runTokens.input+runTokens.output).toLocaleString()}  |  Cost: $${runCost.toFixed(5)}  |  ~${tokPerStock} tokens/qualifying stock`, 'ok');
+    dbg(`Sent to Claude: ${claudeSent} stocks (score ≥75) | Skipped: ${jsOnlyCount} stocks (JS-only, free)`, 'ok');
     dbg(`Batches: ${runTokens.batches} completed, ${runTokens.failedBatches} failed`, runTokens.failedBatches > 0 ? 'error' : 'ok');
 
-    // Show inline cost strip below results
-    showCostStrip(runTokens, runCost, allResults.length, tickers.length);
+    showCostStrip(runTokens, runCost, allResults.length, tickers.length, claudeSent, jsOnlyCount);
+    setStep(3, 'done');
 
     if (allResults.length > 0) {
       renderResults(allResults);
       document.getElementById('lastUpdated').textContent =
-        `Updated ${new Date().toLocaleTimeString()} — ${allResults.length}/${tickers.length} · $${runCost.toFixed(4)} this run`;
-      dbg(`✓ Complete — ${allResults.length}/${tickers.length} stocks analyzed`, 'ok');
+        `Updated ${new Date().toLocaleTimeString()} — ${allResults.length} stocks · ${claudeSent} via Claude · ${jsOnlyCount} JS-only · $${runCost.toFixed(5)}`;
+      dbg(`✓ Complete — ${allResults.length}/${tickers.length} | Claude: ${claudeSent} | JS-only: ${jsOnlyCount}`, 'ok');
     } else {
-      renderError('No results returned from any batch. Check API keys and try again.');
+      renderError('No results returned. Check API keys and try again.');
     }
 
   } catch(err) {
@@ -1449,24 +1490,29 @@ function buildResult(live, pa, claudeRow) {
 
 
 // ── Cost strip shown after every run ─────────────────────────────────────────
-function showCostStrip(tokens, cost, analyzed, total) {
+function showCostStrip(tokens, cost, analyzed, total, claudeSent, jsOnly) {
   const el = document.getElementById('costStrip');
   if (!el) return;
   const inCost  = (tokens.input  * 3  / 1_000_000);
   const outCost = (tokens.output * 15 / 1_000_000);
   const tokTotal = tokens.input + tokens.output;
-  const perStock = analyzed ? Math.round(tokTotal / analyzed) : 0;
-
-  // Compare vs pre-option3 baseline (356 tokens/stock output from last run)
-  const baselineOut = analyzed * 356;
-  const actualOut   = tokens.output;
-  const saving = baselineOut > 0 ? Math.round((1 - actualOut / baselineOut) * 100) : null;
+  const perStock = claudeSent > 0 ? Math.round(tokTotal / claudeSent) : 0;
+  const baselineOut = (claudeSent || 0) * 356;
+  const saving = baselineOut > 0 ? Math.round((1 - tokens.output / baselineOut) * 100) : null;
 
   el.style.display = 'flex';
   el.innerHTML = `
     <div class="cs-item">
       <div class="cs-label">This run cost</div>
       <div class="cs-val" style="color:var(--accent)">$${cost.toFixed(5)}</div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">Claude calls</div>
+      <div class="cs-val" style="color:var(--accent2)">${claudeSent} <span class="cs-sub">score ≥80</span></div>
+    </div>
+    <div class="cs-item">
+      <div class="cs-label">JS-only (free)</div>
+      <div class="cs-val" style="color:var(--bull)">${jsOnly} <span class="cs-sub">skipped</span></div>
     </div>
     <div class="cs-item">
       <div class="cs-label">Input tokens</div>
@@ -1477,19 +1523,15 @@ function showCostStrip(tokens, cost, analyzed, total) {
       <div class="cs-val">${tokens.output.toLocaleString()} <span class="cs-sub">$${outCost.toFixed(5)}</span></div>
     </div>
     <div class="cs-item">
-      <div class="cs-label">Tokens / stock</div>
-      <div class="cs-val">${perStock.toLocaleString()}</div>
-    </div>
-    <div class="cs-item">
-      <div class="cs-label">Stocks analyzed</div>
-      <div class="cs-val">${analyzed} / ${total}</div>
+      <div class="cs-label">Tokens / qualifying</div>
+      <div class="cs-val">${perStock || '—'}</div>
     </div>
     ${saving !== null ? `<div class="cs-item">
       <div class="cs-label">Output vs baseline</div>
-      <div class="cs-val" style="color:${saving > 0 ? 'var(--bull)' : 'var(--bear)'}">${saving > 0 ? '−' : '+'}${Math.abs(saving)}% ${saving > 0 ? '✓ saving' : '⚠ over'}</div>
+      <div class="cs-val" style="color:${saving>0?'var(--bull)':'var(--bear)'}">${saving>0?'−':'+'}${Math.abs(saving)}% ${saving>0?'✓':'⚠'}</div>
     </div>` : ''}
-    <div style="margin-left:auto;align-self:center">
-      <span style="font-size:10px;color:var(--muted)">Model: claude-sonnet-4-6 · $3/$15 per MTok</span>
+    <div style="margin-left:auto;align-self:center;padding:0 14px">
+      <span style="font-size:10px;color:var(--muted)">claude-sonnet-4-6 · $3/$15/MTok</span>
     </div>`;
 }
 
