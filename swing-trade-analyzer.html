@@ -229,6 +229,23 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .sig-table tbody tr:hover{background:var(--surface2)}
 .sig-table td{padding:9px 18px;font-size:12px;vertical-align:middle}
 .sig-table td:last-child{color:var(--muted);font-size:11px;line-height:1.4}
+/* ── Watchlist manager ───────────────────────────────────────────────────── */
+.wl-bar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;flex-wrap:wrap}
+.wl-bar-left{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.wl-label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);flex-shrink:0}
+.wl-tabs{display:flex;gap:4px;flex-wrap:wrap}
+.wl-tab{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:5px;font-size:11px;font-weight:500;cursor:pointer;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);transition:all .15s;white-space:nowrap}
+.wl-tab:hover{border-color:var(--accent);color:var(--accent)}
+.wl-tab.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}
+.wl-tab .wl-count{font-size:9px;opacity:.8}
+.wl-tab .wl-del{font-size:11px;margin-left:2px;opacity:.5}
+.wl-tab .wl-del:hover{opacity:1;color:var(--bear)}
+.wl-add-btn{padding:4px 9px;border-radius:5px;border:1px dashed var(--border2);background:transparent;color:var(--muted);font-size:14px;cursor:pointer;transition:all .15s}
+.wl-add-btn:hover{border-color:var(--accent);color:var(--accent)}
+.wl-bar-right{display:flex;align-items:center;gap:6px}
+.wl-act-btn{font-size:10px;color:var(--muted);cursor:pointer;padding:3px 8px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);transition:all .15s}
+.wl-act-btn:hover{color:var(--accent);border-color:var(--accent)}
+
 .cs-item{padding:10px 16px;border-right:1px solid var(--border);flex-shrink:0}
 .cs-item:last-of-type{border-right:none}
 .cs-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:3px}
@@ -309,7 +326,17 @@ canvas.spark-inline{display:block;width:120px;height:40px}
     </div>
 
     <!-- Upload status -->
-    <div id="xlStatus" style="display:none;margin-top:8px;font-size:11px;padding:7px 10px;border-radius:6px;border-left:2px solid var(--accent);background:rgba(0,212,170,.06);color:var(--accent)"></div>
+    <div id="xlStatus" style="display:none;margin-top:8px;font-size:11px;padding:7px 10px;border-radius:6px;border-left:2px solid var(--accent);background:rgba(13,158,122,.06);color:var(--accent)"></div>
+
+    <!-- Watchlist selector -->
+    <div class="wl-bar" id="wlBar">
+      <div class="wl-bar-left">
+        <span class="wl-label">Watchlist:</span>
+        <div class="wl-tabs" id="wlTabs"></div>
+        <button class="wl-add-btn" onclick="addWatchlist()" title="New watchlist">＋</button>
+      </div>
+      <div class="wl-bar-right" id="wlActions"></div>
+    </div>
 
     <div class="ticker-tags" id="tickerTags"></div>
     <div class="params-row">
@@ -490,7 +517,7 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 
   loadKeys();
-  loadTickers();
+  loadWatchlists();
   detectProxy();
   ['polygonKey','anthropicKey'].forEach(id => {
     const el = document.getElementById(id);
@@ -514,82 +541,244 @@ function dbg(msg, type = 'info') {
   document.getElementById('debugPanel').style.display = 'block';
 }
 
-// ── Tickers ───────────────────────────────────────────────────────────────────
-const TICKERS_KEY = 'swingedge_watchlist';
-let tickers = [];
-let tickerInput; // assigned in DOMContentLoaded
+// ── Multi-Watchlist Manager ───────────────────────────────────────────────────
+const WL_KEY         = 'swingedge_watchlists_v2';
+const WL_ACTIVE_KEY  = 'swingedge_active_wl';
+const MAX_TICKERS    = 50;
+const MAX_WATCHLISTS = 8;
 
-function saveTickers() {
-  try { localStorage.setItem(TICKERS_KEY, JSON.stringify(tickers)); } catch(e) {}
+// ── Preset watchlists bundled with the app ────────────────────────────────────
+const PRESETS = {
+  'Semi Core': [
+    'NVDA','AMD','AVGO','TSM','ASML','AMAT','LRCX','KLAC','MRVL','QCOM',
+    'INTC','MU','ARM','CDNS','SNPS','ASMIY','TSEM','ON','MCHP','TXN'
+  ],
+  'AI Infrastructure': [
+    'NVDA','AMD','AVGO','CRDO','ANET','VRT','SMCI','MRVL','ARM',
+    'AMZN','GOOGL','META','MSFT','ORCL','NOW','CRM','PLTR'
+  ],
+  'Semi Full': [
+    'ASML','ARM','CDNS','SNPS','TSM','ASMIY','AMAT','PLAB','SLAB','RMBS',
+    'UMC','INTC','SNDK','WDC','MU','MBLY','GFS','AVGO','MCHP','STM',
+    'NVDA','AMD','QCOM','MRVL','ON','LRCX','KLAC','TER','CRDO','MPWR'
+  ],
+  'Mega-cap AI': [
+    'NVDA','AMD','AVGO','TSLA','AMZN','GOOGL','META','MSFT','ORCL','CRM'
+  ],
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let watchlists  = {};   // { name: [ticker, ...] }
+let activeWL    = '';
+let tickers     = [];   // alias — always equals watchlists[activeWL] or []
+let tickerInput;
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+function saveWatchlists() {
+  try { localStorage.setItem(WL_KEY, JSON.stringify(watchlists)); } catch(e) {}
+  try { localStorage.setItem(WL_ACTIVE_KEY, activeWL); } catch(e) {}
 }
 
-function loadTickers() {
+function loadWatchlists() {
   try {
-    const saved = localStorage.getItem(TICKERS_KEY);
-    if (!saved) return;
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) {
-      localStorage.removeItem(TICKERS_KEY); // corrupt — nuke it
-      return;
+    const raw = localStorage.getItem(WL_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        // Sanitise each list
+        Object.entries(parsed).forEach(([name, list]) => {
+          if (Array.isArray(list)) {
+            watchlists[name] = list
+              .filter(t => typeof t === 'string' && /^[A-Z]{1,6}$/.test(t))
+              .slice(0, MAX_TICKERS);
+          }
+        });
+      }
     }
-    // Only accept 1-6 uppercase letter strings (real ticker format)
-    // Max 6 chars: longest US ticker is 5 chars, some ETFs have dots stripped to 6
-    const clean = parsed.filter(t =>
-      typeof t === 'string' &&
-      /^[A-Z]{1,6}$/.test(t) &&
-      t.length <= 6
-    ).slice(0, 30);
+  } catch(e) { watchlists = {}; }
 
-    if (clean.length > 0) {
-      tickers = clean;
-      renderTickers();
-      setXLStatus(`✓ Watchlist loaded — ${tickers.length} tickers`);
-    }
-
-    // If cleaning removed items, resave the clean version
-    if (clean.length !== parsed.length) {
-      saveTickers();
-    }
-  } catch(e) {
-    localStorage.removeItem(TICKERS_KEY); // corrupt JSON — nuke it
+  // If nothing saved, seed with presets
+  if (Object.keys(watchlists).length === 0) {
+    Object.entries(PRESETS).forEach(([name, list]) => {
+      watchlists[name] = [...list];
+    });
   }
+
+  // Restore last active
+  try {
+    const saved = localStorage.getItem(WL_ACTIVE_KEY);
+    activeWL = (saved && watchlists[saved]) ? saved : Object.keys(watchlists)[0];
+  } catch(e) {
+    activeWL = Object.keys(watchlists)[0];
+  }
+
+  tickers = watchlists[activeWL] || [];
+  renderWLTabs();
+  renderTickers();
+}
+
+// ── Watchlist operations ──────────────────────────────────────────────────────
+function switchWL(name) {
+  if (!watchlists[name]) return;
+  activeWL = name;
+  tickers  = watchlists[activeWL];
+  renderWLTabs();
+  renderTickers();
+  saveWatchlists();
+}
+
+function addWatchlist() {
+  if (Object.keys(watchlists).length >= MAX_WATCHLISTS) {
+    alert(`Maximum ${MAX_WATCHLISTS} watchlists reached.`); return;
+  }
+  const name = prompt('Watchlist name (e.g. "EV Semis", "Momentum 30"):');
+  if (!name || !name.trim()) return;
+  const clean = name.trim().slice(0, 20);
+  if (watchlists[clean]) { alert('A watchlist with that name already exists.'); return; }
+  watchlists[clean] = [];
+  activeWL = clean;
+  tickers  = watchlists[activeWL];
+  saveWatchlists();
+  renderWLTabs();
+  renderTickers();
+}
+
+function deleteWatchlist(name, e) {
+  e.stopPropagation();
+  if (Object.keys(watchlists).length <= 1) { alert("Can't delete the last watchlist."); return; }
+  if (!confirm(`Delete watchlist "${name}"? This cannot be undone.`)) return;
+  delete watchlists[name];
+  activeWL = Object.keys(watchlists)[0];
+  tickers  = watchlists[activeWL];
+  saveWatchlists();
+  renderWLTabs();
+  renderTickers();
+}
+
+function renameWatchlist() {
+  const name = prompt('New name:', activeWL);
+  if (!name || !name.trim() || name.trim() === activeWL) return;
+  const clean = name.trim().slice(0, 20);
+  if (watchlists[clean]) { alert('Name already exists.'); return; }
+  watchlists[clean] = watchlists[activeWL];
+  delete watchlists[activeWL];
+  activeWL = clean;
+  tickers  = watchlists[activeWL];
+  saveWatchlists();
+  renderWLTabs();
+  renderTickers();
+}
+
+function loadPreset(presetName) {
+  if (!PRESETS[presetName]) return;
+  if (!confirm(`Replace "${activeWL}" with the "${presetName}" preset (${PRESETS[presetName].length} tickers)?`)) return;
+  watchlists[activeWL] = [...PRESETS[presetName]];
+  tickers = watchlists[activeWL];
+  saveWatchlists();
+  renderTickers();
+  setXLStatus(`✓ Loaded preset "${presetName}" — ${tickers.length} tickers`);
+}
+
+// ── Ticker operations ─────────────────────────────────────────────────────────
+const NOISE_WORDS = new Set([
+  'STARTING','ANALYSIS','FOR','TICKERS','POLYGON','KEY',
+  'THE','AND','ARE','BUT','NOT','YOU','ALL','CAN','HAS',
+  'HIM','HIS','HOW','ITS','MAY','NEW','NOW','OLD','SEE',
+  'TWO','WAY','WHO','DID','LET','MEN','PUT','SAY','SHE',
+  'TOO','USE','LIVE','LAST','CLOSE','BARS','BATCH','SENT',
+  'BUILT','STOCK','SCORE','SEND','DATA','FROM','WITH','THIS',
+  'THAT','HAVE','WILL','YOUR','THEY','BEEN','MORE','VERY',
+  'WHAT','KNOW','JUST','FIRST','ALSO','INTO','OVER','SUCH',
+  'EVEN','MOST','MADE','AFTER','BACK','ONLY','COME','COULD',
+]);
+
+function isValidTicker(t) {
+  if (!/^[A-Z]{1,6}$/.test(t)) return false;
+  if (NOISE_WORDS.has(t)) return false;
+  return true;
 }
 
 function addTicker(t) {
   t = (t || '').toUpperCase().replace(/[^A-Z]/g, '');
-  if (t && !tickers.includes(t) && tickers.length < 30) {
-    tickers.push(t);
-    renderTickers();
-    saveTickers();
-  }
+  if (!t || !isValidTicker(t)) return;
+  if (!watchlists[activeWL]) watchlists[activeWL] = [];
+  if (watchlists[activeWL].includes(t)) return;
+  if (watchlists[activeWL].length >= MAX_TICKERS) { setXLStatus(`⚠ Max ${MAX_TICKERS} tickers per watchlist`); return; }
+  watchlists[activeWL].push(t);
+  tickers = watchlists[activeWL];
+  renderTickers();
+  renderWLTabs(); // update count badge
+  saveWatchlists();
 }
 
 function removeTicker(t) {
-  tickers = tickers.filter(x => x !== t);
+  if (!watchlists[activeWL]) return;
+  watchlists[activeWL] = watchlists[activeWL].filter(x => x !== t);
+  tickers = watchlists[activeWL];
   renderTickers();
-  saveTickers();
+  renderWLTabs();
+  saveWatchlists();
+}
+
+function clearAllTickers() {
+  if (!confirm(`Clear all tickers from "${activeWL}"?`)) return;
+  watchlists[activeWL] = [];
+  tickers = [];
+  renderTickers();
+  renderWLTabs();
+  saveWatchlists();
+  setXLStatus('');
+}
+
+// ── Render ────────────────────────────────────────────────────────────────────
+function renderWLTabs() {
+  const tabsEl    = document.getElementById('wlTabs');
+  const actionsEl = document.getElementById('wlActions');
+  if (!tabsEl) return;
+
+  tabsEl.innerHTML = Object.keys(watchlists).map(name => {
+    const count  = (watchlists[name] || []).length;
+    const active = name === activeWL ? 'active' : '';
+    return `<div class="wl-tab ${active}" onclick="switchWL('${name.replace(/'/g,"\\'")}')">
+      ${name} <span class="wl-count">(${count})</span>
+      <span class="wl-del" onclick="deleteWatchlist('${name.replace(/'/g,"\\'")}', event)" title="Delete">×</span>
+    </div>`;
+  }).join('');
+
+  if (actionsEl) {
+    // Preset loader + rename button
+    const presetOpts = Object.keys(PRESETS).map(p =>
+      `<option value="${p}">${p} (${PRESETS[p].length})</option>`
+    ).join('');
+    actionsEl.innerHTML = `
+      <select class="wl-act-btn" onchange="loadPreset(this.value);this.value=''" style="cursor:pointer">
+        <option value="">Load preset…</option>${presetOpts}
+      </select>
+      <button class="wl-act-btn" onclick="renameWatchlist()">✎ Rename</button>`;
+  }
 }
 
 function renderTickers() {
   const wrap = document.getElementById('tickerTags');
   if (!wrap) return;
-  wrap.innerHTML = tickers.length
-    ? tickers.map(t =>
+  const list = watchlists[activeWL] || [];
+  wrap.innerHTML = list.length
+    ? list.map(t =>
         `<div class="ticker-tag"><span>${t}</span><span class="rm" onclick="removeTicker('${t}')">×</span></div>`
       ).join('') +
       `<div class="ticker-tag ticker-saved-badge">
-        <span style="color:var(--bull)">✓ ${tickers.length} saved</span>
+        <span style="color:var(--bull)">✓ ${list.length} saved</span>
         <span class="rm" style="color:var(--bear)" onclick="clearAllTickers()">✕ clear</span>
       </div>`
-    : `<div style="font-size:11px;color:var(--dim);padding:4px 0">Your watchlist auto-saves — tickers persist between sessions</div>`;
+    : `<div style="font-size:11px;color:var(--dim);padding:4px 0">
+        No tickers — type above or load a preset →
+       </div>`;
 }
 
-function clearAllTickers() {
-  tickers = [];
-  renderTickers();
-  saveTickers();
-  setXLStatus('');
-}
+// Keep old saveTickers/loadTickers stubs so nothing breaks if called
+function saveTickers() { saveWatchlists(); }
+function loadTickers()  { /* handled by loadWatchlists */ }
+
 
 // ── Excel / CSV upload ────────────────────────────────────────────────────────
 function handleXLUpload(input) {
@@ -623,17 +812,23 @@ function handleXLUpload(input) {
         return;
       }
 
-      // Merge with existing, dedupe, cap at 30
-      const before = tickers.length;
-      found.forEach(t => { if (!tickers.includes(t) && tickers.length < 30) tickers.push(t); });
-      const added = tickers.length - before;
+      // Merge with active watchlist, dedupe, cap at MAX_TICKERS
+      if (!watchlists[activeWL]) watchlists[activeWL] = [];
+      const before = watchlists[activeWL].length;
+      found.forEach(t => {
+        if (isValidTicker(t) && !watchlists[activeWL].includes(t) && watchlists[activeWL].length < MAX_TICKERS)
+          watchlists[activeWL].push(t);
+      });
+      tickers = watchlists[activeWL];
+      const added   = tickers.length - before;
       const skipped = found.length - added;
 
       renderTickers();
-      saveTickers();
+      renderWLTabs();
+      saveWatchlists();
       let msg = `✓ Loaded ${added} ticker${added!==1?'s':''} from ${file.name}`;
-      if (skipped > 0) msg += ` · ${skipped} duplicate${skipped!==1?'s':''}/over-limit skipped`;
-      if (tickers.length >= 30) msg += ' · 30-ticker limit reached';
+      if (skipped > 0) msg += ` · ${skipped} skipped`;
+      if (tickers.length >= MAX_TICKERS) msg += ` · ${MAX_TICKERS}-ticker limit reached`;
       setXLStatus(msg);
     } catch(err) {
       setXLStatus('Could not parse file: ' + err.message, 'error');
