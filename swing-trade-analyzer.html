@@ -821,18 +821,20 @@ async function fetchTickerData(ticker) {
   const shareCount = details?.share_class_shares_outstanding;
 
   // ── Chart structure: swing highs/lows and prior resistance ──────────────────
-  // Look back over last 60 bars for meaningful price levels
   const recentBars = bars.slice(-60);
 
-  // Prior resistance: highest high in last 20 bars (excluding last 3 — recent action)
-  const res20Bars = recentBars.slice(-23, -3);
-  const priorResistance = res20Bars.length
-    ? +Math.max(...res20Bars.map(b => b.h)).toFixed(2)
+  // Prior resistance — use wider lookback for medium/long holds
+  // Short: 15-bar lookback (recent price action)
+  // Medium/Long: 40-bar lookback (finds more meaningful resistance)
+  const resLookback = 40;
+  const resBars = recentBars.slice(-(resLookback + 3), -3); // exclude last 3 bars
+  const priorResistance = resBars.length
+    ? +Math.max(...resBars.map(b => b.h)).toFixed(2)
     : null;
 
-  // Prior support: lowest low in last 20 bars (excluding last 3)
-  const priorSupport = res20Bars.length
-    ? +Math.min(...res20Bars.map(b => b.l)).toFixed(2)
+  // Prior support — same wider window
+  const priorSupport = resBars.length
+    ? +Math.min(...resBars.map(b => b.l)).toFixed(2)
     : null;
 
   // Recent consolidation range (last 10 bars): used for measured-move target
@@ -985,9 +987,10 @@ function preAnalyse(s, holdPeriod, minRR) {
   let targetBasis = '';
 
   if (holdPeriod === 'short') {
-    // Short: ATR-based only
-    target = +(entry + stopDist * Math.max(minRR, 1.5)).toFixed(2);
-    targetBasis = `ATR extension ×${Math.max(minRR, 1.5).toFixed(1)}`;
+    // Short: ATR-based — use 2.5× stop distance so R:R genuinely exceeds minRR
+    const shortMult = Math.max(minRR + 0.5, 2.5); // always at least 0.5 above minRR
+    target = +(entry + stopDist * shortMult).toFixed(2);
+    targetBasis = `ATR ×${shortMult.toFixed(1)} (${shortMult.toFixed(1)} R:R)`;
   } else if (holdPeriod === 'medium') {
     // Medium: prefer prior resistance, then measured move, then ATR
     if (s.priorResistance && s.priorResistance > entry) {
@@ -1234,19 +1237,24 @@ function parseJSON(raw) {
 }
 
 // ── Main run ──────────────────────────────────────────────────────────────────
-const BATCH_SIZE = 5;      // tickers per AI call (stays well within 8k token limit)
-const POLY_CONCURRENCY = 5; // parallel Polygon fetches
+const BATCH_SIZE = 5;
+const POLY_CONCURRENCY = 5;
+let _isRunning = false; // guard against double-tap / double-click
 
 async function runAnalysis() {
+  // Prevent concurrent runs — mobile double-tap protection
+  if (_isRunning) { dbg('Run already in progress — ignoring duplicate call'); return; }
+  _isRunning = true;
+
   const log = document.getElementById('debugLog');
   if (log) log.innerHTML = '';
   document.getElementById('debugPanel').style.display = 'none';
 
   saveKeys();
 
-  if (!POLY_KEY) { alert('Please enter your Polygon.io API key.'); return; }
-  if (!ANTH_KEY) { alert('Please enter your Anthropic API key.'); return; }
-  if (tickers.length === 0) { tickerInput.focus(); alert('Add at least one ticker, or upload an Excel file.'); return; }
+  if (!POLY_KEY) { _isRunning = false; alert('Please enter your Polygon.io API key.'); return; }
+  if (!ANTH_KEY) { _isRunning = false; alert('Please enter your Anthropic API key.'); return; }
+  if (tickers.length === 0) { _isRunning = false; tickerInput.focus(); alert('Add at least one ticker, or upload an Excel file.'); return; }
 
   dbg(`Starting analysis for ${tickers.length} tickers: ${tickers.join(', ')}`);
   dbg(`Polygon key: ${POLY_KEY.slice(0,8)}… | Anthropic key: ${ANTH_KEY.slice(0,12)}…`);
@@ -1420,7 +1428,7 @@ async function runAnalysis() {
     dbg(`Input tokens : ${runTokens.input.toLocaleString()}  ($${(runTokens.input  * 3  / 1_000_000).toFixed(5)})`, 'ok');
     dbg(`Output tokens: ${runTokens.output.toLocaleString()}  ($${(runTokens.output * 15 / 1_000_000).toFixed(5)})`, 'ok');
     dbg(`Total tokens : ${(runTokens.input+runTokens.output).toLocaleString()}  |  Cost: $${runCost.toFixed(5)}  |  ~${tokPerStock} tokens/qualifying stock`, 'ok');
-    dbg(`Sent to Claude: ${claudeSent} stocks (score ≥75) | Skipped: ${jsOnlyCount} stocks (JS-only, free)`, 'ok');
+    dbg(`Sent to Claude: ${claudeSent} stocks (score ≥${CLAUDE_SCORE_THRESHOLD}) | Skipped: ${jsOnlyCount} stocks (JS-only, free)`, 'ok');
     dbg(`Batches: ${runTokens.batches} completed, ${runTokens.failedBatches} failed`, runTokens.failedBatches > 0 ? 'error' : 'ok');
 
     showCostStrip(runTokens, runCost, allResults.length, tickers.length, claudeSent, jsOnlyCount);
@@ -1441,6 +1449,7 @@ async function runAnalysis() {
     renderError(err.message);
   } finally {
     btn.disabled = false;
+    _isRunning = false;
   }
 }
 
@@ -1569,8 +1578,14 @@ async function fetchAllParallel(tickerList, concurrency) {
 
 // Show interim results while batches are still running
 function renderStreamingResults(partialResults, batchDone, totalBatches) {
+  // Null-guard everything — a second concurrent run may find these elements gone
+  const batchStatusEl  = document.getElementById('batchStatus');
+  const streamSummaryEl = document.getElementById('streamSummary');
+  const streamView1El  = document.getElementById('streamView1');
+  if (!batchStatusEl || !streamSummaryEl || !streamView1El) return; // DOM replaced, bail silently
+
   const pct = Math.round((batchDone / totalBatches) * 100);
-  document.getElementById('batchStatus').textContent =
+  batchStatusEl.textContent =
     `${batchDone} of ${totalBatches} batches complete (${pct}%) — ${partialResults.length} stocks analyzed so far`;
 
   // Sort interim results same as final
@@ -1585,7 +1600,7 @@ function renderStreamingResults(partialResults, batchDone, totalBatches) {
   const watches = sorted.filter(r => r.verdict === 'watch').length;
   const avoids  = sorted.filter(r => r.verdict === 'avoid').length;
 
-  const summaryEl = document.getElementById('streamSummary');
+  const summaryEl = streamSummaryEl;
   summaryEl.innerHTML = `
     <div class="summary-bar" style="margin-bottom:12px">
       <div class="sum-item"><div class="sum-label">Buy</div><div class="sum-val" style="color:var(--bull)">${buys}</div></div>
@@ -1618,8 +1633,8 @@ function renderStreamingResults(partialResults, batchDone, totalBatches) {
     </tr>`;
   }).join('');
 
-  document.getElementById('streamView1').style.display = 'block';
-  document.getElementById('streamView1').innerHTML = `
+  streamView1El.style.display = 'block';
+  streamView1El.innerHTML = `
     <div class="trade-table-wrap">
       <table class="trade-table">
         <thead><tr>
