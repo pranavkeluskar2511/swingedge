@@ -1178,6 +1178,7 @@ function preAnalyse(s, holdPeriod, minRR) {
   return {
     entry, stop, target, targetBasis,
     stopDist, actualRR, upside, stopPct,
+    rrIsChartAnchored: targetBasis.includes('resistance') || targetBasis.includes('swing') || targetBasis.includes('52w') || targetBasis.includes('measured'),
     scores: {
       setup: l1, technical: l2, fundamental: l3,
       risk: l4, plan: l5, overall: overallScore
@@ -1817,6 +1818,17 @@ function renderResults(results) {
     const rrNum     = parseFloat(r.rr||0);
     const rrColor   = rrNum>=2.5?'var(--bull)':rrNum>=1.5?'var(--warn)':'var(--bear)';
 
+    // R:R quality: chart-anchored (resistance/swing/measured move) vs ATR fallback
+    const isChartRR = r.targetBasis && (
+      r.targetBasis.includes('resistance') ||
+      r.targetBasis.includes('swing')      ||
+      r.targetBasis.includes('52w')        ||
+      r.targetBasis.includes('measured')
+    );
+    const rrQualityLabel = isChartRR
+      ? `<div style="font-size:9px;color:var(--accent);margin-top:2px">◉ chart level</div>`
+      : `<div style="font-size:9px;color:var(--dim);margin-top:2px">○ ATR fallback</div>`;
+
     const priceSub = isLive
       ? `<div class="t-chg" style="color:${chgColor}">${chgSign}${live.changePct}%</div>`
       : live.priceIsExt
@@ -1854,6 +1866,7 @@ function renderResults(results) {
       </td>
       <td class="td-r">
         <div class="rr-val" style="color:${rrColor}">${r.rr||'—'}</div>
+        ${rrQualityLabel}
       </td>
       <td><canvas class="spark-inline" id="spark-${i}"></canvas></td>
     </tr>`;
