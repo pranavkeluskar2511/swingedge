@@ -1947,10 +1947,11 @@ function buildSignalSummary(results) {
   if (!el) return;
 
   // Classify each stock
-  const dipBuys   = [];  // gap down (or flat) + RSI healthy (<68)
-  const gapRips   = [];  // gap up strong + RSI elevated (>70) — chasing risk
+  const dipBuys   = [];  // gap down ≤ -1% + RSI healthy — actual dip to buy
+  const cleanSetup= [];  // flat open (-0.5% to +0.5%) + RSI healthy — no gap distortion
+  const gapRips   = [];  // gap up ≥ +1% + RSI elevated (>70) — chasing risk
   const avoids    = [];  // gap down + RSI elevated (>70) — double negative
-  const momentum  = [];  // gap up + RSI healthy — clean momentum
+  const momentum  = [];  // gap up ≥ +1% + RSI healthy — clean momentum
 
   results.forEach(r => {
     const live = r._live || {};
@@ -1959,13 +1960,16 @@ function buildSignalSummary(results) {
     const verdict = r.verdict;
     if (rsi == null || gap == null) return;
 
-    const gapDown   = gap <= -0.5;
-    const gapFlat   = gap > -0.5 && gap < 0.5;
-    const gapUp     = gap >= 0.5 && gap < 2;
-    const gapUpStrg = gap >= 2;
-    const rsiHealthy   = rsi < 68;
-    const rsiStretched = rsi >= 68 && rsi < 75;
-    const rsiOver      = rsi >= 75;
+    // Gap thresholds — tighter for dip signal clarity
+    const gapDownStrg = gap <= -2;          // ≥2% gap down — meaningful dip
+    const gapDown     = gap > -2 && gap <= -1;  // 1–2% gap down — mild dip
+    const gapFlat     = gap > -1 && gap < 1;    // flat — no gap signal
+    const gapUp       = gap >= 1 && gap < 2;    // 1–2% gap up
+    const gapUpStrg   = gap >= 2;               // ≥2% gap up — strong momentum
+
+    const rsiHealthy  = rsi < 65;
+    const rsiNeutral  = rsi >= 65 && rsi < 70;
+    const rsiOver     = rsi >= 75;
 
     const row = {
       ticker:  r.ticker,
@@ -1980,40 +1984,47 @@ function buildSignalSummary(results) {
       rr:      r.rr,
     };
 
-    if ((gapDown || gapFlat) && rsiHealthy && verdict !== 'avoid') {
-      // Gap down or flat, RSI not overbought — potential dip buy
-      row.read = gapDown && gap <= -2
-        ? `Strong gap down — wait for support hold`
-        : gapDown
-          ? `Gap down into healthy RSI — dip candidate`
-          : `Flat open, RSI healthy — clean entry`;
+    if ((gapDown || gapDownStrg) && rsi < 70 && verdict !== 'avoid') {
+      // Actual gap down + RSI not overbought — genuine dip candidate
+      row.read = gapDownStrg
+        ? `Gap down ${gap.toFixed(1)}% — wait for support hold before entry`
+        : `Mild gap down into healthy RSI — monitor for entry`;
       dipBuys.push(row);
+
+    } else if (gapFlat && rsiHealthy && verdict !== 'avoid') {
+      // Flat open + healthy RSI — clean setup, no gap distortion
+      row.read = `Flat open — no gap noise, clean technical setup`;
+      cleanSetup.push(row);
+
     } else if ((gapUp || gapUpStrg) && rsiOver) {
       // Gapping up into overbought RSI — don't chase
       row.read = gapUpStrg
         ? `Gap up ${gap.toFixed(1)}% + RSI ${rsi} — avoid chasing`
-        : `Gap up + RSI stretched — wait for pullback`;
+        : `Mild gap up + RSI stretched — wait for pullback`;
       gapRips.push(row);
-    } else if (gapDown && rsiOver) {
+
+    } else if ((gapDown || gapDownStrg) && rsiOver) {
       // Gapping down AND overbought — distribution signal
       row.read = rsi > 80
-        ? `RSI ${rsi} extreme + gap down — distribution`
+        ? `RSI ${rsi} extreme + gap down ${gap.toFixed(1)}% — distribution`
         : `RSI stretched + gap down — double negative`;
       avoids.push(row);
-    } else if ((gapUp || gapUpStrg) && rsiHealthy) {
+
+    } else if ((gapUp || gapUpStrg) && rsi < 70) {
       // Gapping up with healthy RSI — momentum continuation
       row.read = gapUpStrg
-        ? `Strong gap up, RSI not extended — momentum`
+        ? `Gap up ${gap.toFixed(1)}%, RSI not extended — momentum play`
         : `Mild gap up, RSI healthy — constructive`;
       momentum.push(row);
     }
   });
 
   // Sort each group by relevance
-  dipBuys.sort((a,b)  => a.gap - b.gap);    // most negative gap first
-  avoids.sort((a,b)   => b.rsi - a.rsi);    // highest RSI first
-  gapRips.sort((a,b)  => b.gap - a.gap);    // biggest gap first
-  momentum.sort((a,b) => b.score - a.score);// highest score first
+  dipBuys.sort((a,b)    => a.gap - b.gap);    // most negative gap first
+  cleanSetup.sort((a,b) => b.score - a.score); // highest score first
+  avoids.sort((a,b)     => b.rsi - a.rsi);    // highest RSI first
+  gapRips.sort((a,b)    => b.gap - a.gap);    // biggest gap first
+  momentum.sort((a,b)   => b.score - a.score);// highest score first
 
   if (!dipBuys.length && !avoids.length && !gapRips.length && !momentum.length) {
     el.style.display = 'none';
@@ -2060,10 +2071,11 @@ function buildSignalSummary(results) {
       <span class="sig-header-title">Key Signals — ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
       <span class="sig-header-sub">${results.length} stocks · gap vs prior close</span>
     </div>
-    ${section('Buy-the-dip candidates', '↓', dipBuys,   'var(--bull)', 'No dip setups')}
-    ${section('Momentum — clean gap up', '↑', momentum, 'var(--accent2)', 'No momentum setups')}
-    ${section('Avoid — gap down + overbought', '⚠', avoids,  'var(--bear)', 'No avoid signals')}
-    ${section('Don\'t chase — gap up + stretched', '🔥', gapRips, 'var(--warn)', 'No chase warnings')}
+    ${section('Buy-the-dip candidates',         '↓', dipBuys,    'var(--bull)',   'No dip setups')}
+    ${section('Clean setup — flat open',        '◎', cleanSetup, 'var(--accent2)','No flat setups')}
+    ${section('Momentum — clean gap up',        '↑', momentum,   'var(--accent)', 'No momentum setups')}
+    ${section('Avoid — gap down + overbought',  '⚠', avoids,     'var(--bear)',   'No avoid signals')}
+    ${section('Don\'t chase — gap up + stretched','🔥',gapRips,  'var(--warn)',   'No chase warnings')}
   `;
 }
 
