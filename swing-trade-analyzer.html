@@ -121,6 +121,15 @@ header{display:flex;align-items:flex-end;justify-content:space-between;margin-bo
 .t-name{font-size:10px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px}
 .t-chg{font-size:10px;margin-top:2px}
 .last-close-badge{color:var(--warn);background:rgba(245,166,35,.1);border:1px solid rgba(245,166,35,.25);border-radius:3px;padding:1px 5px;display:inline-block;font-size:9px;letter-spacing:.04em}
+
+/* Gap badges */
+.gap-badge{display:inline-block;font-size:9px;font-weight:600;padding:2px 6px;border-radius:3px;letter-spacing:.04em;margin-top:3px}
+.gap-up-strong{background:rgba(0,212,170,.15);color:var(--bull);border:1px solid rgba(0,212,170,.3)}
+.gap-up{background:rgba(0,212,170,.08);color:var(--bull);border:1px solid rgba(0,212,170,.2)}
+.gap-down-strong{background:rgba(255,77,106,.15);color:var(--bear);border:1px solid rgba(255,77,106,.3)}
+.gap-down{background:rgba(255,77,106,.08);color:var(--bear);border:1px solid rgba(255,77,106,.2)}
+.gap-flat{color:var(--dim);font-size:9px}
+.ext-badge{display:inline-block;font-size:9px;padding:1px 6px;border-radius:3px;background:rgba(0,153,255,.12);color:var(--accent2);border:1px solid rgba(0,153,255,.25);margin-top:2px}
 .verdict-badge{display:inline-block;font-family:var(--display);font-size:9px;font-weight:700;letter-spacing:.08em;padding:3px 9px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
 .verdict-buy{background:rgba(0,212,170,.15);color:var(--bull);border:1px solid rgba(0,212,170,.3)}
 .verdict-watch{background:rgba(245,166,35,.12);color:var(--warn);border:1px solid rgba(245,166,35,.25)}
@@ -680,6 +689,22 @@ function nDaysAgo(n) {
   return localDateStr(d);
 }
 
+// Get current hour (decimal) in US Eastern Time — handles EST/EDT automatically
+function getETHour(date) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric', minute: 'numeric', hour12: false
+    }).formatToParts(date);
+    const h = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const m = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    return h + m / 60;
+  } catch(e) {
+    // Fallback: approximate as UTC-4 (EDT)
+    return ((date.getUTCHours() - 4 + 24) % 24) + date.getUTCMinutes() / 60;
+  }
+}
+
 // Compute RSI from closes array
 function calcRSI(closes, period = 14) {
   if (closes.length < period + 1) return null;
@@ -733,20 +758,25 @@ function calcATR(bars, period = 14) {
 
 // ── Fetch all data for one ticker ─────────────────────────────────────────────
 async function fetchTickerData(ticker) {
-  const today   = prevTradingDay(1);   // last completed session
+  const today   = prevTradingDay(1);
   const from90  = nDaysAgo(100);
   const from365 = nDaysAgo(380);
   dbg(`${ticker}: fetching bars ${from90} → ${today}`);
 
-  const [barsRes, snapRes, detailsRes] = await Promise.allSettled([
+  const [barsRes, snapRes, detailsRes, extRes] = await Promise.allSettled([
     polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from90}/${today}?adjusted=true&sort=asc&limit=120`),
     polyGet(`/v2/snapshot/locale/us/markets/stocks/tickers/${ticker}`),
-    polyGet(`/v3/reference/tickers/${ticker}`)
+    polyGet(`/v3/reference/tickers/${ticker}`),
+    // Extended hours: 1-minute bars for today covering pre+post market
+    // from=today 4:00am, to=today 9:30am for pre-market
+    // Polygon free tier returns whatever is available
+    polyGet(`/v2/aggs/ticker/${ticker}/range/1/minute/${localDateStr(new Date())}/${localDateStr(new Date())}?adjusted=true&sort=asc&limit=300&extended_hours=true`)
   ]);
 
   const bars    = barsRes.status    === 'fulfilled' ? (barsRes.value.results    || []) : [];
   const snap    = snapRes.status    === 'fulfilled' ?  snapRes.value.ticker          : null;
   const details = detailsRes.status === 'fulfilled' ?  detailsRes.value.results      : null;
+  const extBars = extRes.status     === 'fulfilled' ? (extRes.value.results          || []) : [];
 
   if (bars.length === 0) {
     dbg(`${ticker}: ⚠ zero bars returned — barsRes status=${barsRes.status}, error=${barsRes.reason||'none'}`, 'error');
@@ -756,33 +786,95 @@ async function fetchTickerData(ticker) {
   const barsYearRes = await polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from365}/${today}?adjusted=true&sort=asc&limit=400`).catch(() => ({ results: [] }));
   const barsYear = barsYearRes.results || [];
 
-  const closes    = bars.map(b => b.c);       // 90-day closes
-  const closesLong = barsYear.map(b => b.c);  // 365-day closes — for MA200 + 52w
-  const vols      = bars.map(b => b.v);
+  const closes     = bars.map(b => b.c);
+  const closesLong = barsYear.map(b => b.c);
+  const vols       = bars.map(b => b.v);
 
-  // Current price — try live snapshot first, fall back to last daily bar close
+  // ── Regular session price ─────────────────────────────────────────────────
   const lastBar = bars[bars.length - 1] || {};
   const prevBar = bars[bars.length - 2] || {};
 
   const livePrice      = snap?.day?.c || snap?.lastTrade?.p || null;
   const lastClosePrice = lastBar.c || snap?.prevDay?.c || null;
+  const prevClose      = prevBar.c || snap?.prevDay?.c || lastClosePrice || 0;
 
-  const price = livePrice || lastClosePrice || 0;
-  const priceIsLive  = !!livePrice;
-  const priceIsClose = !livePrice && !!lastClosePrice;
-  const priceSource  = livePrice ? 'live'
-    : lastClosePrice ? `last close ${prevTradingDay(1)}`
-    : 'unavailable';
+  // ── Extended hours detection ──────────────────────────────────────────────
+  const now      = new Date();
+  const etHour   = getETHour(now);            // current hour in ET
+  const isPreMkt = etHour >= 4  && etHour < 9.5;
+  const isPostMkt= etHour >= 16 && etHour < 20;
+  const isRegular= etHour >= 9.5 && etHour < 16;
 
-  const prevClose = prevBar.c || snap?.prevDay?.c || price;
-  const changePct = (priceIsLive && prevClose && price)
+  // Extended hours price: last trade from snapshot (includes extended hours)
+  const extPrice = snap?.lastTrade?.p || snap?.lastQuote?.P || null;
+
+  // Determine the most current price and its source
+  let price, priceIsLive, priceIsClose, priceIsExt, priceSource;
+
+  if (isRegular && livePrice) {
+    price       = livePrice;
+    priceIsLive = true; priceIsClose = false; priceIsExt = false;
+    priceSource = 'live (regular session)';
+  } else if ((isPreMkt || isPostMkt) && extPrice) {
+    price       = extPrice;
+    priceIsLive = false; priceIsClose = false; priceIsExt = true;
+    priceSource = isPreMkt ? 'pre-market' : 'after-hours';
+  } else if (livePrice) {
+    price       = livePrice;
+    priceIsLive = true; priceIsClose = false; priceIsExt = false;
+    priceSource = 'live';
+  } else {
+    price       = lastClosePrice || 0;
+    priceIsLive = false; priceIsClose = true; priceIsExt = false;
+    priceSource = `last close ${prevTradingDay(1)}`;
+  }
+
+  const changePct = (price && prevClose)
     ? +((price - prevClose) / prevClose * 100).toFixed(2)
     : null;
 
-  const volume   = priceIsLive ? (snap?.day?.v || lastBar.v || 0) : 0;
+  // ── Gap analysis ──────────────────────────────────────────────────────────
+  // prevSessionClose = last regular session close (for gap measurement)
+  const prevSessionClose = lastBar.c || snap?.prevDay?.c || 0;
+
+  // Gap % = how much price has moved from prev regular close
+  // Meaningful for pre-market and at market open
+  const gapPct = (price && prevSessionClose && (priceIsExt || isPreMkt || isRegular))
+    ? +((price - prevSessionClose) / prevSessionClose * 100).toFixed(2)
+    : null;
+
+  // Gap direction signal
+  let gapSignal = null;
+  if (gapPct !== null) {
+    if      (gapPct >=  2) gapSignal = 'gap-up-strong';     // ≥2% gap up
+    else if (gapPct >=  0.5) gapSignal = 'gap-up';           // 0.5–2% gap up
+    else if (gapPct <= -2) gapSignal = 'gap-down-strong';    // ≥2% gap down — potential buy-the-dip
+    else if (gapPct <= -0.5) gapSignal = 'gap-down';          // 0.5–2% gap down
+    else                    gapSignal = 'flat';
+  }
+
+  // Pre-market high/low from minute bars (useful for support/resistance at open)
+  const preMktBars = extBars.filter(b => {
+    const barHour = getETHour(new Date(b.t));
+    return barHour >= 4 && barHour < 9.5;
+  });
+  const preMktHigh = preMktBars.length ? +Math.max(...preMktBars.map(b => b.h)).toFixed(2) : null;
+  const preMktLow  = preMktBars.length ? +Math.min(...preMktBars.map(b => b.l)).toFixed(2) : null;
+  const preMktVol  = preMktBars.length ? preMktBars.reduce((s, b) => s + (b.v||0), 0) : null;
+
+  // After-hours high/low
+  const postMktBars = extBars.filter(b => {
+    const barHour = getETHour(new Date(b.t));
+    return barHour >= 16 && barHour < 20;
+  });
+  const postMktHigh = postMktBars.length ? +Math.max(...postMktBars.map(b => b.h)).toFixed(2) : null;
+  const postMktLow  = postMktBars.length ? +Math.min(...postMktBars.map(b => b.l)).toFixed(2) : null;
+
+  const volume   = (priceIsLive || isRegular) ? (snap?.day?.v || lastBar.v || 0) : 0;
   const avgVol20 = vols.length >= 20
     ? Math.round(vols.slice(-20).reduce((a,b) => a+b, 0) / 20)
     : null;
+  const volRatio = avgVol20 && volume ? +(volume / avgVol20).toFixed(2) : null;
 
   // Technicals — MA50 from 90-day bars, MA200 from 365-day bars
   const rsi14 = calcRSI(closes);
@@ -795,8 +887,6 @@ async function fetchTickerData(ticker) {
   // 52-week range — must use 365-day bars so current price never exceeds it
   const wk52Hi = barsYear.length ? +Math.max(...barsYear.map(b => b.h)).toFixed(2) : null;
   const wk52Lo = barsYear.length ? +Math.min(...barsYear.map(b => b.l)).toFixed(2) : null;
-
-  const volRatio = avgVol20 && volume ? +(volume / avgVol20).toFixed(2) : null;
 
   // Trend — now reliable because MA200 uses 365-day data
   let trend = 'unknown';
@@ -854,7 +944,12 @@ async function fetchTickerData(ticker) {
     ticker, companyName, sector, marketCap, description,
     price: price ? +price.toFixed(2) : 0,
     prevClose: prevClose ? +prevClose.toFixed(2) : 0,
-    changePct, priceSource, priceIsLive, priceIsClose,
+    prevSessionClose: prevSessionClose ? +prevSessionClose.toFixed(2) : 0,
+    changePct, priceSource, priceIsLive, priceIsClose, priceIsExt,
+    isPreMkt, isPostMkt, isRegular,
+    gapPct, gapSignal,
+    preMktHigh, preMktLow, preMktVol,
+    postMktHigh, postMktLow,
     volume, avgVol20, volRatio,
     rsi14, macd, ma20, ma50, ma200, atr14,
     wk52Hi, wk52Lo, trend,
@@ -1556,7 +1651,7 @@ async function fetchAllParallel(tickerList, concurrency) {
       try {
         const data = await fetchTickerData(ticker);
         results[i] = data;
-        dbg(`✓ ${ticker}: $${data.price} (${data.priceSource}), RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
+        dbg(`✓ ${ticker}: $${data.price} (${data.priceSource})${data.gapPct !== null ? ` gap ${data.gapPct >= 0 ? '+' : ''}${data.gapPct}%` : ''}, RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
       } catch(e) {
         dbg(`✗ ${ticker}: ${e.message}`, 'error');
         results[i] = {
@@ -1647,6 +1742,37 @@ function renderStreamingResults(partialResults, batchDone, totalBatches) {
     </div>`;
 }
 
+// ── Gap badge builder ─────────────────────────────────────────────────────────
+function buildGapBadge(live) {
+  if (!live) return '';
+  const lines = [];
+
+  // Extended hours label
+  if (live.priceIsExt) {
+    const label = live.isPreMkt ? '◑ Pre-market' : '◑ After-hours';
+    lines.push(`<span class="ext-badge">${label} $${live.price}</span>`);
+  }
+
+  // Gap badge
+  if (live.gapPct !== null && live.gapSignal && live.gapSignal !== 'flat') {
+    const sign  = live.gapPct >= 0 ? '+' : '';
+    const cls   = live.gapSignal.replace('-strong','').replace('-','_') === 'gap_up' ? 'gap-up' : 'gap-down';
+    const strong = live.gapSignal.includes('strong');
+    const label = live.gapPct >= 0
+      ? `▲ Gap Up ${sign}${live.gapPct}%${strong ? ' ⚡' : ''}`
+      : `▼ Gap Down ${live.gapPct}%${strong ? ' — dip??' : ''}`;
+    const badgeCls = live.gapSignal.replace('-','_').replace('gap_up_strong','gap-up-strong').replace('gap_up','gap-up').replace('gap_down_strong','gap-down-strong').replace('gap_down','gap-down');
+    lines.push(`<span class="gap-badge ${badgeCls}">${label}</span>`);
+  }
+
+  // Pre-market range (useful before open)
+  if (live.isPreMkt && live.preMktHigh && live.preMktLow) {
+    lines.push(`<div style="font-size:9px;color:var(--muted);margin-top:2px">PM range: $${live.preMktLow}–$${live.preMktHigh}</div>`);
+  }
+
+  return lines.join('<br>');
+}
+
 // ── Render ────────────────────────────────────────────────────────────────────
 let _lastResults = [];
 
@@ -1691,18 +1817,22 @@ function renderResults(results) {
     const rrNum     = parseFloat(r.rr||0);
     const rrColor   = rrNum>=2.5?'var(--bull)':rrNum>=1.5?'var(--warn)':'var(--bear)';
 
-    // Price label: live change % OR last-close badge
     const priceSub = isLive
       ? `<div class="t-chg" style="color:${chgColor}">${chgSign}${live.changePct}%</div>`
-      : isClose
-        ? `<div class="t-chg last-close-badge">◷ Last close</div>`
-        : `<div class="t-chg" style="color:var(--dim)">No price data</div>`;
+      : live.priceIsExt
+        ? `<div class="t-chg" style="color:${chgColor}">${chgSign}${live.changePct||0}%</div>`
+        : isClose
+          ? `<div class="t-chg last-close-badge">◷ Last close</div>`
+          : `<div class="t-chg" style="color:var(--dim)">No price data</div>`;
+
+    const gapHtml = buildGapBadge(live);
 
     tableRows += `<tr>
       <td>
         <div class="t-ticker">${r.ticker}</div>
         <div class="t-name">${r.companyName||''}</div>
         ${priceSub}
+        ${gapHtml}
       </td>
       <td><span class="verdict-badge ${vc}">${vl}</span></td>
       <td class="td-r">
@@ -1780,12 +1910,15 @@ function renderResults(results) {
 
     // Market + technicals kv — all sourced from Polygon live data
     const mkt = [
-      ['Price',       priceDisplay],
-      ['Price source', live.priceSource || '—'],
-      ['Volume',      isLive && live.volume ? live.volume.toLocaleString()+(live.volRatio?` (${live.volRatio}x avg)`:'') : '—'],
-      ['52w range',   live.wk52Lo&&live.wk52Hi ? `$${live.wk52Lo} – $${live.wk52Hi}` : '—'],
-      ['Mkt cap',     live.marketCap||'—'],
-      ['Sector',      live.sector||'—'],
+      ['Price',         priceDisplay],
+      ['Price source',  live.priceSource || '—'],
+      ...(live.gapPct !== null ? [['Gap from close', `${live.gapPct >= 0 ? '+' : ''}${live.gapPct}% (${live.gapSignal?.replace(/-/g,' ') || '—'})`]] : []),
+      ...(live.preMktHigh ? [['Pre-mkt range', `$${live.preMktLow} – $${live.preMktHigh}`]] : []),
+      ...(live.postMktHigh ? [['After-hours range', `$${live.postMktLow} – $${live.postMktHigh}`]] : []),
+      ['Volume',        isLive && live.volume ? live.volume.toLocaleString()+(live.volRatio?` (${live.volRatio}x avg)`:'') : '—'],
+      ['52w range',     live.wk52Lo&&live.wk52Hi ? `$${live.wk52Lo} – $${live.wk52Hi}` : '—'],
+      ['Mkt cap',       live.marketCap||'—'],
+      ['Sector',        live.sector||'—'],
     ];
     const tech = [
       ['RSI (14)',  live.rsi14!=null ? `${live.rsi14}${live.rsi14>70?' ↑OB':live.rsi14<30?' ↓OS':''}` : '—'],
