@@ -259,7 +259,7 @@ canvas.spark-inline{display:block;width:120px;height:40px}
     <div class="panel-label">Stocks to analyze</div>
     <div class="input-row">
       <div class="ticker-wrap">
-        <input type="text" id="tickerInput" placeholder="Type a ticker (e.g. NVDA) and press Enter…" maxlength="6">
+        <input type="text" id="tickerInput" placeholder="NVDA, AMD, TSM, MSFT — type or paste comma-separated tickers, then Enter" maxlength="200">
       </div>
 
       <!-- Excel upload -->
@@ -389,13 +389,34 @@ window.addEventListener('DOMContentLoaded', () => {
   // Wire up ticker input now that DOM is ready
   tickerInput = document.getElementById('tickerInput');
   if (tickerInput) {
+    // Parse and add whatever is in the input field
+    function processTickerInput() {
+      const raw = tickerInput.value;
+      if (!raw.trim()) return;
+      // Split on commas, spaces, semicolons, newlines — any common separator
+      const parts = raw.split(/[\s,;|\/\n\r]+/);
+      let added = 0;
+      parts.forEach(p => {
+        const t = p.trim().toUpperCase().replace(/[^A-Z]/g, '');
+        if (t && !tickers.includes(t) && tickers.length < 30) {
+          tickers.push(t);
+          added++;
+        }
+      });
+      if (added > 0) renderTickers();
+      tickerInput.value = '';
+    }
+
     tickerInput.addEventListener('keydown', e => {
-      if (e.key === 'Enter' || e.key === ',') {
+      if (e.key === 'Enter') {
         e.preventDefault();
-        const t = tickerInput.value.trim().toUpperCase().replace(/[^A-Z]/g, '');
-        addTicker(t);
-        tickerInput.value = '';
+        processTickerInput();
       }
+    });
+
+    // Also parse on paste after a short delay (so the value is populated)
+    tickerInput.addEventListener('paste', () => {
+      setTimeout(processTickerInput, 50);
     });
   }
 
