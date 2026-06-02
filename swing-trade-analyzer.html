@@ -410,21 +410,50 @@ window.addEventListener('DOMContentLoaded', () => {
   // Wire up ticker input now that DOM is ready
   tickerInput = document.getElementById('tickerInput');
   if (tickerInput) {
-    // Parse and add whatever is in the input field
+
+    // Common English words that pass the A-Z filter but are not tickers
+    // Prevents debug log text from being parsed as tickers
+    const NOISE_WORDS = new Set([
+      'STARTING','ANALYSIS','FOR','TICKERS','POLYGON','KEY',
+      'THE','AND','FOR','ARE','BUT','NOT','YOU','ALL','CAN',
+      'HER','WAS','ONE','OUR','OUT','DAY','GET','HAS','HIM',
+      'HIS','HOW','ITS','MAY','NEW','NOW','OLD','SEE','TWO',
+      'WAY','WHO','BOY','DID','ITS','LET','MEN','PUT','SAY',
+      'SHE','TOO','USE','LIVE','LAST','CLOSE','BARS','BATCH',
+      'SENT','BUILT','STOCK','SCORE','SEND','DATA','FROM',
+      'WITH','THIS','THAT','HAVE','WILL','YOUR','THEY','BEEN',
+      'MORE','VERY','WHAT','KNOW','JUST','FIRST','ALSO','INTO',
+      'OVER','SUCH','EVEN','MOST','MADE','AFTER','BACK','ONLY',
+      'COME','COULD','TIME','THAN','THEN','THEM','THESE',
+      'SOME','WOULD','MAKE','LIKE','LOOK','ONLY','COME',
+    ]);
+
+    function isValidTicker(t) {
+      // Must be 1-6 uppercase letters only
+      if (!/^[A-Z]{1,6}$/.test(t)) return false;
+      // Reject tokens longer than 5 chars that are pure common words
+      if (t.length > 5 && NOISE_WORDS.has(t)) return false;
+      // Reject known noise words of any length
+      if (NOISE_WORDS.has(t)) return false;
+      return true;
+    }
+
     function processTickerInput() {
       const raw = tickerInput.value;
       if (!raw.trim()) return;
-      // Split on commas, spaces, semicolons, newlines — any common separator
       const parts = raw.split(/[\s,;|\/\n\r]+/);
       let added = 0;
       parts.forEach(p => {
         const t = p.trim().toUpperCase().replace(/[^A-Z]/g, '');
-        if (t && !tickers.includes(t) && tickers.length < 30) {
+        if (t && isValidTicker(t) && !tickers.includes(t) && tickers.length < 30) {
           tickers.push(t);
           added++;
         }
       });
-      if (added > 0) renderTickers();
+      if (added > 0) {
+        renderTickers();
+        saveTickers();
+      }
       tickerInput.value = '';
     }
 
@@ -478,15 +507,33 @@ function saveTickers() {
 function loadTickers() {
   try {
     const saved = localStorage.getItem(TICKERS_KEY);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        tickers = parsed.filter(t => /^[A-Z]{1,6}$/.test(t)).slice(0, 30);
-        renderTickers();
-        setXLStatus(`✓ Watchlist loaded — ${tickers.length} tickers`);
-      }
+    if (!saved) return;
+    const parsed = JSON.parse(saved);
+    if (!Array.isArray(parsed)) {
+      localStorage.removeItem(TICKERS_KEY); // corrupt — nuke it
+      return;
     }
-  } catch(e) {}
+    // Only accept 1-6 uppercase letter strings (real ticker format)
+    // Max 6 chars: longest US ticker is 5 chars, some ETFs have dots stripped to 6
+    const clean = parsed.filter(t =>
+      typeof t === 'string' &&
+      /^[A-Z]{1,6}$/.test(t) &&
+      t.length <= 6
+    ).slice(0, 30);
+
+    if (clean.length > 0) {
+      tickers = clean;
+      renderTickers();
+      setXLStatus(`✓ Watchlist loaded — ${tickers.length} tickers`);
+    }
+
+    // If cleaning removed items, resave the clean version
+    if (clean.length !== parsed.length) {
+      saveTickers();
+    }
+  } catch(e) {
+    localStorage.removeItem(TICKERS_KEY); // corrupt JSON — nuke it
+  }
 }
 
 function addTicker(t) {
