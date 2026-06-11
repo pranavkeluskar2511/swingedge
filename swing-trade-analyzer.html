@@ -780,18 +780,31 @@ async function fetchMarketContext() {
   label.textContent = 'Fetching…';
   if (status) { status.style.display = 'inline'; status.style.color = 'var(--muted)'; status.textContent = 'Searching news…'; }
 
-  const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+  const todayShort = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-  const prompt = `Today is ${today}. You are a market context assistant for a semiconductor and AI stock swing trader.
+  const prompt = `Today is ${today}.
 
-Search the web for today's latest market news and write a SINGLE concise paragraph (2-3 sentences max, ~50 words) summarising the current macro environment relevant to semiconductor and AI stocks.
+Search the web for market news from TODAY (${todayShort}) and YESTERDAY only. Do not use news older than 48 hours.
 
-Cover the most relevant of: Fed/rates/inflation, geopolitical risks (Middle East, US-China), sector catalysts (earnings, guidance, trade policy), notable semi/AI stock moves today.
+Write a SINGLE plain-text paragraph (2-3 sentences, ~50 words) summarising what a semiconductor/AI stock swing trader needs to know RIGHT NOW for trading decisions tomorrow.
 
-Format: plain text only, no bullet points, no headers. Start directly with the context. Example format:
-"US-Iran conflict ongoing with airstrikes exchanged Jun 10, oil at $88 adding inflation pressure. May CPI 4.2% in-line with estimates, no rate cut expected in 2026. Semi sector down 5% from June 9 trade deal highs on sell-the-news reversal."
+Focus on:
+1. What happened TODAY in markets — futures direction, key index moves, sector performance
+2. Any FRESH catalysts from the last 24-48 hours — geopolitical events, Fed speakers, economic data releases, major earnings
+3. The current macro backdrop — rate expectations, oil price if elevated, USD direction
 
-Write only the context paragraph. Nothing else.`;
+DO NOT include:
+- News older than 48 hours (e.g. do not mention Broadcom earnings from June 2 — that is already priced in)
+- Generic statements like "markets remain volatile"
+- Any analysis or recommendations
+
+Verify the dates of your sources before writing. If a story is from more than 2 days ago, skip it.
+
+Output format: plain text only, start directly with the context, no bullet points, no headers, no quotes around the text.
+
+Example of good output:
+"S&P 500 futures down 0.4% Wednesday morning as US-Iran military strikes escalated overnight, with IDF attacking petrochemical facilities in southwestern Iran. May CPI printed 4.2% in-line with estimates, energy driving 60% of the monthly increase — no rate cut catalyst. Semi sector futures flat to slightly negative ahead of open."`;
 
   try {
     const data = await anthropicFetch({
