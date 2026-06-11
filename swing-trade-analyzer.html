@@ -226,7 +226,12 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .sig-header-sub{font-size:11px;color:var(--muted)}
 .sig-section{border-bottom:1px solid var(--border)}
 .sig-section:last-child{border-bottom:none}
-.sig-title{display:flex;align-items:center;gap:8px;padding:10px 18px;font-family:var(--display);font-size:11px;font-weight:700;letter-spacing:.04em;border-left:3px solid;background:var(--surface2);color:var(--text)}
+.sig-title{display:flex;align-items:center;gap:8px;padding:10px 18px;font-family:var(--display);font-size:11px;font-weight:700;letter-spacing:.04em;border-left:3px solid;background:var(--surface2);color:var(--text);cursor:pointer;user-select:none;transition:background .12s}
+.sig-title:hover{background:var(--bg)}
+.sig-chevron{margin-left:6px;font-size:11px;transition:transform .22s cubic-bezier(.4,0,.2,1);display:inline-block;color:var(--dim)}
+.sig-body{overflow:hidden;transition:max-height .28s cubic-bezier(.4,0,.2,1),opacity .2s ease}
+.sig-body.collapsed{max-height:0!important;opacity:0;pointer-events:none}
+.sig-body.expanded{opacity:1}
 .sig-icon{font-size:13px}
 .sig-count{margin-left:auto;background:var(--bg);border:1px solid var(--border2);border-radius:10px;font-size:10px;font-weight:500;padding:1px 8px;color:var(--muted)}
 .sig-table{width:100%;border-collapse:collapse}
@@ -2454,20 +2459,56 @@ function buildSignalSummary(results) {
     }).join('');
   }
 
-  function section(title, icon, rows, borderColor, emptyMsg) {
+  // Persistent open/close state across re-renders — keyed by section id
+  // Default: Buy-the-dip and Clean setup open, others closed
+  const SIG_DEFAULTS = { dip: true, clean: true, momentum: false, avoid: false, chase: false };
+  if (!window._sigState) window._sigState = { ...SIG_DEFAULTS };
+
+  function toggleSigSection(id) {
+    window._sigState[id] = !window._sigState[id];
+    const body    = document.getElementById(`sig-body-${id}`);
+    const chevron = document.getElementById(`sig-chev-${id}`);
+    if (!body || !chevron) return;
+    const open = window._sigState[id];
+    if (open) {
+      body.style.maxHeight = body.scrollHeight + 'px';
+      body.classList.remove('collapsed');
+      body.classList.add('expanded');
+      chevron.style.transform = 'rotate(0deg)';
+    } else {
+      body.style.maxHeight = body.scrollHeight + 'px'; // set explicit before collapsing
+      requestAnimationFrame(() => {
+        body.style.maxHeight = '0px';
+        body.classList.add('collapsed');
+        body.classList.remove('expanded');
+        chevron.style.transform = 'rotate(-90deg)';
+      });
+    }
+  }
+
+  function section(id, title, icon, rows, borderColor) {
     if (!rows.length) return '';
+    const open      = window._sigState[id] !== false; // default open unless explicitly closed
+    const bodyClass = open ? 'expanded' : 'collapsed';
+    const chevRot   = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+    // Estimate initial maxHeight — rows × ~42px per row + header ~34px
+    const estHeight = open ? (rows.length * 42 + 34) + 'px' : '0px';
     return `
       <div class="sig-section">
-        <div class="sig-title" style="border-left-color:${borderColor}">
-          <span class="sig-icon">${icon}</span>${title}
+        <div class="sig-title" style="border-left-color:${borderColor}" onclick="toggleSigSection('${id}')">
+          <span class="sig-icon">${icon}</span>
+          ${title}
           <span class="sig-count">${rows.length}</span>
+          <span id="sig-chev-${id}" class="sig-chevron" style="transform:${chevRot}">▾</span>
         </div>
-        <table class="sig-table">
-          <thead><tr>
-            <th>Ticker</th><th>Gap</th><th>RSI</th><th>Signal</th><th>Read</th>
-          </tr></thead>
-          <tbody>${tableRows(rows, 5)}</tbody>
-        </table>
+        <div id="sig-body-${id}" class="sig-body ${bodyClass}" style="max-height:${estHeight}">
+          <table class="sig-table">
+            <thead><tr>
+              <th>Ticker</th><th>Gap</th><th>RSI</th><th>Signal</th><th>Read</th>
+            </tr></thead>
+            <tbody>${tableRows(rows, 5)}</tbody>
+          </table>
+        </div>
       </div>`;
   }
 
@@ -2475,14 +2516,25 @@ function buildSignalSummary(results) {
   el.innerHTML = `
     <div class="sig-header">
       <span class="sig-header-title">Key Signals — ${new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>
-      <span class="sig-header-sub">${results.length} stocks · gap vs prior close</span>
+      <span class="sig-header-sub">${results.length} stocks · click headers to expand · gap vs prior close</span>
     </div>
-    ${section('Buy-the-dip candidates',         '↓', dipBuys,    'var(--bull)',   'No dip setups')}
-    ${section('Clean setup — flat open',        '◎', cleanSetup, 'var(--accent2)','No flat setups')}
-    ${section('Momentum — clean gap up',        '↑', momentum,   'var(--accent)', 'No momentum setups')}
-    ${section('Avoid — gap down + overbought',  '⚠', avoids,     'var(--bear)',   'No avoid signals')}
-    ${section('Don\'t chase — gap up + stretched','🔥',gapRips,  'var(--warn)',   'No chase warnings')}
+    ${section('dip',      'Buy-the-dip candidates',          '↓', dipBuys,    'var(--bull)')}
+    ${section('clean',    'Clean setup — flat open',         '◎', cleanSetup, 'var(--accent2)')}
+    ${section('momentum', 'Momentum — clean gap up',         '↑', momentum,   'var(--accent)')}
+    ${section('avoid',    'Avoid — gap down + overbought',   '⚠', avoids,     'var(--bear)')}
+    ${section('chase',    "Don't chase — gap up + stretched",'🔥',gapRips,    'var(--warn)')}
   `;
+
+  // After render, set real scrollHeight-based maxHeight for open sections
+  // so the CSS transition has an accurate target
+  requestAnimationFrame(() => {
+    ['dip','clean','momentum','avoid','chase'].forEach(id => {
+      const body = document.getElementById(`sig-body-${id}`);
+      if (body && window._sigState[id]) {
+        body.style.maxHeight = body.scrollHeight + 'px';
+      }
+    });
+  });
 }
 
 
