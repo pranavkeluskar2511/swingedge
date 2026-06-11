@@ -2198,8 +2198,12 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
 
   // Use editable market context if set, otherwise use default placeholder
   const contextToInject = (window._marketContextOverride && window._marketContextOverride.length > 10)
-    ? `Context: ${window._marketContextOverride}`
-    : '';  // blank = no context injected if user hasn't filled it in
+    ? `MACRO CONTEXT (must factor into entry timing): ${window._marketContextOverride}`
+    : '';
+
+  const contextInstruction = contextToInject
+    ? `entryNote: entry trigger with price — if macro context creates a headwind or tailwind, state it in max 12 words (e.g. "Wait for Oracle capex selloff to stabilise before entry above $1740")`
+    : `entryNote: specific entry trigger with price (max 12 words)`;
 
   return `Swing trade analyst. Write 3 trade sentences per stock. Hold=${holdLabel} Regime=${regime}
 ${contextToInject ? '\n' + contextToInject + '\n' : ''}
@@ -2207,7 +2211,7 @@ ${stockLines}
 
 Return ONLY a JSON array. No markdown.
 [{"ticker":"","entryNote":"","exitNote":"","stopNote":""}]
-entryNote: specific entry trigger with price (max 12 words)
+${contextInstruction}
 exitNote: profit-taking plan with target (max 12 words)
 stopNote: stop loss logic with price (max 12 words)`;
 }
