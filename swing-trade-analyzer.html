@@ -420,11 +420,37 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 
   <!-- Debug log -->
   <div id="debugPanel" style="display:none;margin-top:24px">
-    <div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center">
-      <span>Debug log</span>
-      <span style="cursor:pointer;color:var(--dim)" onclick="document.getElementById('debugPanel').style.display='none'">✕ hide</span>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">Run Log</span>
+        <span id="dbgLineCount" style="font-size:10px;background:var(--surface2);border:1px solid var(--border2);border-radius:10px;padding:1px 8px;color:var(--dim)">0 lines</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <!-- Copy button -->
+        <button id="dbgCopyBtn" onclick="copyDebugLog()"
+          style="display:flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--border2);border-radius:5px;color:var(--muted);font-family:var(--mono);font-size:10px;padding:3px 10px;cursor:pointer;transition:all .15s;letter-spacing:.04em">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+          </svg>
+          <span id="dbgCopyLabel">Copy log</span>
+        </button>
+        <!-- Filter toggles -->
+        <button onclick="toggleDbgFilter('ok')"    id="dbgF_ok"    title="Toggle fetch lines"   style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .15s">✓ OK</button>
+        <button onclick="toggleDbgFilter('error')" id="dbgF_error" title="Toggle error lines"   style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .15s">✕ Errors</button>
+        <button onclick="toggleDbgFilter('info')"  id="dbgF_info"  title="Toggle info lines"    style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .15s">ℹ Info</button>
+        <button onclick="clearDebugLog()"
+          style="font-size:10px;padding:2px 7px;border-radius:4px;border:1px solid var(--border2);background:var(--surface2);color:var(--muted);cursor:pointer;transition:all .15s"
+          title="Clear log">✕ Clear</button>
+        <span style="cursor:pointer;color:var(--dim);font-size:11px;padding:2px 6px" onclick="document.getElementById('debugPanel').style.display='none'" title="Hide log">hide</span>
+      </div>
     </div>
-    <div id="debugLog" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;font-size:11px;max-height:200px;overflow-y:auto;font-family:var(--mono)"></div>
+    <!-- Log container -->
+    <div id="debugLog"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;font-size:11px;max-height:360px;overflow-y:auto;font-family:var(--mono);line-height:1.6">
+    </div>
+    <!-- Summary footer — shown after run completes -->
+    <div id="dbgSummaryBar" style="display:none;margin-top:6px;background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-size:10px;font-family:var(--mono);display:none;gap:20px;flex-wrap:wrap;align-items:center">
+    </div>
   </div>
 </div>
 
@@ -562,15 +588,157 @@ window.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Debug logger ──────────────────────────────────────────────────────────────
+// Stores plain-text lines for one-click copy
+const _dbgLines = [];
+// Filter state: which categories are visible
+const _dbgFilters = { ok: true, error: true, info: true };
+
 function dbg(msg, type = 'info') {
   console.log('[SwingEdge]', msg);
   const log = document.getElementById('debugLog');
   if (!log) return;
-  const color = type === 'error' ? 'var(--bear)' : type === 'ok' ? 'var(--bull)' : 'var(--muted)';
+
   const ts = new Date().toLocaleTimeString();
-  log.innerHTML += `<div style="color:${color};padding:2px 0;border-bottom:1px solid var(--border)">[${ts}] ${msg}</div>`;
+
+  // ── Classify line for richer display ──────────────────────────────────────
+  // Detect line category from message content for icon + colour assignment
+  let icon = '·';
+  let lineClass = type;
+  let color, dimColor;
+
+  if (type === 'error') {
+    icon = '✕'; color = 'var(--bear)'; dimColor = 'rgba(217,48,85,.55)';
+  } else if (type === 'ok') {
+    // Sub-classify ok lines
+    if (msg.startsWith('✓') && msg.includes('fetching bars')) {
+      icon = '↓'; color = 'var(--dim)'; dimColor = 'var(--border)'; lineClass = 'fetch';
+    } else if (msg.startsWith('✓') && (msg.includes('RSI') || msg.includes('live') || msg.includes('last close'))) {
+      icon = '◉'; color = 'var(--accent)'; dimColor = 'rgba(13,158,122,.18)'; lineClass = 'price';
+    } else if (msg.includes('RUN SUMMARY') || msg.includes('Cost:') || msg.includes('tokens')) {
+      icon = '◈'; color = 'var(--accent2)'; dimColor = 'rgba(26,111,204,.15)'; lineClass = 'cost';
+    } else if (msg.includes('SMH RSI benchmark') || msg.includes('Pre-score') || msg.includes('JS-only results') || msg.includes('Complete —')) {
+      icon = '▸'; color = 'var(--bull)'; dimColor = 'rgba(13,158,122,.12)'; lineClass = 'summary';
+    } else if (msg.includes('Batch') && (msg.includes('built') || msg.includes('in=') || msg.includes('sending'))) {
+      icon = '⟳'; color = '#7a9bbf'; dimColor = 'rgba(26,111,204,.10)'; lineClass = 'batch';
+    } else {
+      icon = '✓'; color = 'var(--bull)'; dimColor = 'rgba(13,158,122,.08)'; lineClass = 'ok';
+    }
+  } else {
+    // info
+    if (msg.startsWith('Starting analysis')) {
+      icon = '▶'; color = 'var(--text)'; dimColor = 'rgba(0,0,0,.04)'; lineClass = 'start';
+    } else if (msg.includes('Routing:') || msg.includes('Proxy') || msg.includes('Split into')) {
+      icon = '⚙'; color = 'var(--muted)'; dimColor = 'var(--border)'; lineClass = 'config';
+    } else {
+      icon = '·'; color = 'var(--muted)'; dimColor = 'transparent'; lineClass = 'info';
+    }
+  }
+
+  // Store plain text for copy
+  _dbgLines.push(`[${ts}] ${msg}`);
+
+  // Build the HTML line
+  const dataType = type === 'ok' ? lineClass : type; // for filter matching
+  const isHidden = !_dbgFilters[type === 'ok' ? 'ok' : type] ? 'display:none;' : '';
+
+  // Highlight numbers in the message (prices, RSI, cost values)
+  const msgHtml = msg
+    .replace(/(\$[\d,]+\.?\d*)/g, `<span style="color:var(--text);font-weight:500">$1</span>`)
+    .replace(/(\bRSI=[\d.]+)/g,    `<span style="color:#7a9bbf">$1</span>`)
+    .replace(/(\bATR=[\d.]+)/g,    `<span style="color:var(--dim)">$1</span>`)
+    .replace(/(\bgap [+-][\d.]+%)/g, m => {
+      const isPos = m.includes('+');
+      return `<span style="color:${isPos?'var(--bull)':'var(--bear)'};font-weight:500">${m}</span>`;
+    })
+    .replace(/(cost=\$[\d.]+)/gi,  `<span style="color:var(--accent2);font-weight:500">$1</span>`)
+    .replace(/(fade=\d+%)/g,       `<span style="color:var(--warn)">$1</span>`);
+
+  log.innerHTML += `
+    <div class="dbg-line" data-type="${dataType}"
+      style="${isHidden}display:flex;align-items:baseline;gap:7px;padding:3px 0;border-bottom:1px solid ${dimColor};transition:background .1s">
+      <span style="color:${color};flex-shrink:0;font-size:12px;width:12px;text-align:center">${icon}</span>
+      <span style="color:var(--dim);flex-shrink:0;font-size:10px;min-width:68px">${ts}</span>
+      <span style="color:${color};flex:1;word-break:break-word">${msgHtml}</span>
+    </div>`;
+
   log.scrollTop = log.scrollHeight;
   document.getElementById('debugPanel').style.display = 'block';
+
+  // Update line count badge
+  const countEl = document.getElementById('dbgLineCount');
+  if (countEl) countEl.textContent = `${_dbgLines.length} line${_dbgLines.length !== 1 ? 's' : ''}`;
+
+  // Update summary bar if it's a run summary line
+  if (msg.includes('Cost:') && msg.includes('Total tokens')) {
+    const bar = document.getElementById('dbgSummaryBar');
+    if (bar) {
+      bar.style.display = 'flex';
+      bar.innerHTML = `<span style="color:var(--muted)">Last run:</span> <span style="color:var(--text)">${msg.replace('─── RUN SUMMARY ───','').trim()}</span>`;
+    }
+  }
+}
+
+// ── Copy debug log ────────────────────────────────────────────────────────────
+function copyDebugLog() {
+  const text = _dbgLines.join('\n');
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.getElementById('dbgCopyBtn');
+    const lbl = document.getElementById('dbgCopyLabel');
+    if (!lbl) return;
+    lbl.textContent = 'Copied!';
+    if (btn) { btn.style.borderColor = 'var(--accent)'; btn.style.color = 'var(--accent)'; }
+    setTimeout(() => {
+      lbl.textContent = 'Copy log';
+      if (btn) { btn.style.borderColor = ''; btn.style.color = ''; }
+    }, 2000);
+  }).catch(() => {
+    // Fallback for browsers that block clipboard API
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.cssText = 'position:fixed;top:-9999px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const lbl = document.getElementById('dbgCopyLabel');
+    if (lbl) { lbl.textContent = 'Copied!'; setTimeout(() => lbl.textContent = 'Copy log', 2000); }
+  });
+}
+
+// ── Clear debug log ───────────────────────────────────────────────────────────
+function clearDebugLog() {
+  const log = document.getElementById('debugLog');
+  if (log) log.innerHTML = '';
+  _dbgLines.length = 0;
+  const countEl = document.getElementById('dbgLineCount');
+  if (countEl) countEl.textContent = '0 lines';
+  const bar = document.getElementById('dbgSummaryBar');
+  if (bar) bar.style.display = 'none';
+}
+
+// ── Filter debug log lines ────────────────────────────────────────────────────
+function toggleDbgFilter(type) {
+  _dbgFilters[type] = !_dbgFilters[type];
+  const btn = document.getElementById(`dbgF_${type}`);
+  if (btn) {
+    btn.style.opacity = _dbgFilters[type] ? '1' : '0.35';
+    btn.style.borderColor = _dbgFilters[type] ? '' : 'transparent';
+  }
+  // Show/hide matching lines
+  const log = document.getElementById('debugLog');
+  if (!log) return;
+  const lines = log.querySelectorAll('.dbg-line');
+  lines.forEach(line => {
+    const lt = line.getAttribute('data-type');
+    // Map line subtypes back to filter categories
+    const category = (lt === 'error') ? 'error'
+      : (lt === 'info' || lt === 'start' || lt === 'config') ? 'info'
+      : 'ok'; // fetch, price, cost, summary, batch, ok all fall under 'ok'
+    if (category === type) {
+      line.style.display = _dbgFilters[type] ? 'flex' : 'none';
+    }
+  });
 }
 
 // ── Market context editor ─────────────────────────────────────────────────────
@@ -1900,6 +2068,11 @@ async function runAnalysis() {
 
   const log = document.getElementById('debugLog');
   if (log) log.innerHTML = '';
+  _dbgLines.length = 0;
+  const countEl = document.getElementById('dbgLineCount');
+  if (countEl) countEl.textContent = '0 lines';
+  const bar = document.getElementById('dbgSummaryBar');
+  if (bar) bar.style.display = 'none';
   document.getElementById('debugPanel').style.display = 'none';
 
   saveKeys();
