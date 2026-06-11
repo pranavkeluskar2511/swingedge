@@ -2350,6 +2350,31 @@ async function runAnalysis() {
   }
 }
 
+// ── Signal section toggle — must be global for inline onclick handlers ────────
+function toggleSigSection(id) {
+  if (!window._sigState) window._sigState = {};
+  window._sigState[id] = !window._sigState[id];
+  const body    = document.getElementById(`sig-body-${id}`);
+  const chevron = document.getElementById(`sig-chev-${id}`);
+  if (!body || !chevron) return;
+  const open = window._sigState[id];
+  if (open) {
+    body.classList.remove('collapsed');
+    body.classList.add('expanded');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    chevron.style.transform = 'rotate(0deg)';
+  } else {
+    // Must set explicit px value first, then transition to 0 on next frame
+    body.style.maxHeight = body.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      body.style.maxHeight = '0px';
+      body.classList.add('collapsed');
+      body.classList.remove('expanded');
+      chevron.style.transform = 'rotate(-90deg)';
+    });
+  }
+}
+
 // ── Signal Summary ────────────────────────────────────────────────────────────
 // Generates a post-run tabular summary of key signals:
 // Gap + RSI combinations that indicate buy-the-dip or avoid scenarios
@@ -2463,28 +2488,6 @@ function buildSignalSummary(results) {
   // Default: Buy-the-dip and Clean setup open, others closed
   const SIG_DEFAULTS = { dip: true, clean: true, momentum: false, avoid: false, chase: false };
   if (!window._sigState) window._sigState = { ...SIG_DEFAULTS };
-
-  function toggleSigSection(id) {
-    window._sigState[id] = !window._sigState[id];
-    const body    = document.getElementById(`sig-body-${id}`);
-    const chevron = document.getElementById(`sig-chev-${id}`);
-    if (!body || !chevron) return;
-    const open = window._sigState[id];
-    if (open) {
-      body.style.maxHeight = body.scrollHeight + 'px';
-      body.classList.remove('collapsed');
-      body.classList.add('expanded');
-      chevron.style.transform = 'rotate(0deg)';
-    } else {
-      body.style.maxHeight = body.scrollHeight + 'px'; // set explicit before collapsing
-      requestAnimationFrame(() => {
-        body.style.maxHeight = '0px';
-        body.classList.add('collapsed');
-        body.classList.remove('expanded');
-        chevron.style.transform = 'rotate(-90deg)';
-      });
-    }
-  }
 
   function section(id, title, icon, rows, borderColor) {
     if (!rows.length) return '';
