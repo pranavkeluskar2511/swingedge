@@ -848,7 +848,7 @@ Bad example (do not write like this): "MU closed down 4%, NVDA fell 2%, and AMD 
   try {
     const data = await anthropicFetch({
       model: 'claude-sonnet-4-6',
-      max_tokens: 200,
+      max_tokens: 600,
       tools: [{ type: 'web_search_20250305', name: 'web_search' }],
       messages: [{ role: 'user', content: prompt }]
     });
@@ -879,6 +879,22 @@ Bad example (do not write like this): "MU closed down 4%, NVDA fell 2%, and AMD 
 
     if (!contextText || contextText.length < 20) {
       throw new Error('Response too short — try again');
+    }
+
+    // Detect truncation — if response ends without terminal punctuation,
+    // trim to last complete sentence rather than saving a half-sentence
+    const lastChar = contextText[contextText.length - 1];
+    if (!'.!?'.includes(lastChar)) {
+      const lastStop = Math.max(
+        contextText.lastIndexOf('.'),
+        contextText.lastIndexOf('!'),
+        contextText.lastIndexOf('?')
+      );
+      if (lastStop > 30) {
+        contextText = contextText.slice(0, lastStop + 1).trim();
+      } else {
+        throw new Error('Response truncated — try again in a moment');
+      }
     }
 
     // Populate textarea and save
