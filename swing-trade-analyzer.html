@@ -312,7 +312,15 @@ canvas.spark-inline{display:block;width:120px;height:40px}
       placeholder="e.g. US-China trade deal confirmed Jun 9, US-Iran conflict ongoing, May CPI 4.2% in-line, semi sector -5% on sell-the-news reversal…"
       oninput="updateMarketContext(this.value)"
     ></textarea>
-    <div style="font-size:10px;color:var(--dim);margin-top:4px">Injected into Claude prompts (~40 tokens/batch). Blank = no context. Auto-fetch ~$0.002/click.</div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:5px">
+      <div style="font-size:10px;color:var(--dim)">Injected into Claude prompts (~40 tokens/batch). Blank = no context. Auto-fetch ~$0.002/click.</div>
+      <button onclick="clearMarketContext()"
+        style="font-size:10px;color:var(--dim);background:none;border:none;cursor:pointer;padding:0;font-family:var(--mono);letter-spacing:.04em;white-space:nowrap;transition:color .15s"
+        onmouseover="this.style.color='var(--bear)'" onmouseout="this.style.color='var(--dim)'"
+        title="Clear saved context — use when context is stale or outdated">
+        ✕ clear stale context
+      </button>
+    </div>
   </div>
   <div id="fileBanner" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--warn);line-height:1.9">
     <strong>⚠ Opened as a local file</strong><br>
@@ -763,11 +771,41 @@ function updateMarketContext(val) {
   try { localStorage.setItem('swingedge_market_context', val); } catch(e) {}
 }
 
+function clearMarketContext() {
+  window._marketContextOverride = '';
+  try { localStorage.removeItem('swingedge_market_context'); } catch(e) {}
+  const ta = document.getElementById('marketContextInput');
+  if (ta) { ta.value = ''; ta.style.borderColor = 'var(--bear)'; setTimeout(() => { ta.style.borderColor = ''; }, 1500); }
+  const status = document.getElementById('ctxStatus');
+  if (status) {
+    status.style.display = 'inline';
+    status.style.color = 'var(--muted)';
+    status.textContent = 'Cleared — fetch fresh context or type manually';
+    setTimeout(() => { status.style.display = 'none'; }, 3000);
+  }
+}
+
 // ── Auto-fetch market context via Claude + web search ─────────────────────────
 // One-time call (~$0.002). Searches for today's macro/semi news and writes
 // a concise 2-sentence context ready to inject into SwingEdge prompts.
 async function fetchMarketContext() {
   if (!ANTH_KEY) { alert('Enter your Anthropic API key first.'); return; }
+
+  // Cooldown: 30s between fetches to avoid rate limit hammering
+  const now = Date.now();
+  const lastFetch = window._lastCtxFetch || 0;
+  if (now - lastFetch < 30000) {
+    const remaining = Math.ceil((30000 - (now - lastFetch)) / 1000);
+    const status = document.getElementById('ctxStatus');
+    if (status) {
+      status.style.display = 'inline';
+      status.style.color = 'var(--warn)';
+      status.textContent = `⏳ Wait ${remaining}s before fetching again`;
+      setTimeout(() => { if (status) status.style.display = 'none'; }, 3000);
+    }
+    return;
+  }
+  window._lastCtxFetch = now;
 
   const btn   = document.getElementById('fetchCtxBtn');
   const label = document.getElementById('fetchCtxLabel');
@@ -814,7 +852,13 @@ Example of good output:
       messages: [{ role: 'user', content: prompt }]
     });
 
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) {
+      const msg = data.error.message || '';
+      if (msg.toLowerCase().includes('rate') || data.error.type === 'rate_limit_error') {
+        throw new Error('Rate limit — wait a few minutes and try again');
+      }
+      throw new Error(msg || 'API error');
+    }
 
     // Extract text from response — may have tool_use blocks before final text
     let contextText = '';
@@ -860,8 +904,11 @@ Example of good output:
     label.textContent = 'Fetch today\'s context';
     if (status) {
       status.style.color = 'var(--bear)';
-      status.textContent = `✕ ${err.message.slice(0, 60)}`;
-      setTimeout(() => { if (status) status.style.display = 'none'; }, 5000);
+      const msg = err.message || '';
+      status.textContent = msg.toLowerCase().includes('rate')
+        ? '⏳ Rate limit — wait a few minutes'
+        : `✕ ${msg.slice(0, 55)}`;
+      setTimeout(() => { if (status) status.style.display = 'none'; }, 6000);
     }
   } finally {
     btn.disabled = false;
