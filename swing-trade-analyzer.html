@@ -821,28 +821,29 @@ async function fetchMarketContext() {
   const today = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
   const todayShort = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
-  const prompt = `Today is ${today}.
+  const prompt = `Today is ${today}. You are writing macro context for a semiconductor/AI swing trader.
 
-Search the web for market news from TODAY (${todayShort}) and YESTERDAY only. Do not use news older than 48 hours.
+Search for news from the last 24-48 hours ONLY. Write 2-3 sentences (~50 words) covering WHY markets moved — the macro CAUSES, not the price effects.
 
-Write a SINGLE plain-text paragraph (2-3 sentences, ~50 words) summarising what a semiconductor/AI stock swing trader needs to know RIGHT NOW for trading decisions tomorrow.
+WRITE ABOUT (causes and catalysts only):
+- Geopolitical events: military conflict, trade policy, sanctions, tariffs
+- Economic data: CPI, PPI, jobs, Fed speakers, rate decisions
+- Sector-specific news: export controls, supply chain, major contract wins/losses
+- Overnight futures direction and WHY
 
-Focus on:
-1. What happened TODAY in markets — futures direction, key index moves, sector performance
-2. Any FRESH catalysts from the last 24-48 hours — geopolitical events, Fed speakers, economic data releases, major earnings
-3. The current macro backdrop — rate expectations, oil price if elevated, USD direction
+DO NOT WRITE ABOUT (already in our data):
+- Individual stock price moves ("MU fell 4%", "NVDA down 2%") — we already have prices
+- Broadcom Q3 earnings from June 2 — already priced in, too old
+- Generic market summaries ("stocks fell amid uncertainty")
+- Any event older than 48 hours
 
-DO NOT include:
-- News older than 48 hours (e.g. do not mention Broadcom earnings from June 2 — that is already priced in)
-- Generic statements like "markets remain volatile"
-- Any analysis or recommendations
+TODAY is ${todayShort}. Only use sources dated ${todayShort} or yesterday. Verify source dates.
 
-Verify the dates of your sources before writing. If a story is from more than 2 days ago, skip it.
+Output: plain text only, no bullets, no headers. Start immediately with the context.
 
-Output format: plain text only, start directly with the context, no bullet points, no headers, no quotes around the text.
+Good example: "US-Iran conflict escalated overnight with IDF strikes on Iranian petrochemical facilities after helicopter downing in Strait of Hormuz. May CPI 4.2% in-line, energy component driving gains — no rate cut catalyst for 2026. US semiconductor export controls to China remain in 90-day review period with decision expected late June."
 
-Example of good output:
-"S&P 500 futures down 0.4% Wednesday morning as US-Iran military strikes escalated overnight, with IDF attacking petrochemical facilities in southwestern Iran. May CPI printed 4.2% in-line with estimates, energy driving 60% of the monthly increase — no rate cut catalyst. Semi sector futures flat to slightly negative ahead of open."`;
+Bad example (do not write like this): "MU closed down 4%, NVDA fell 2%, and AMD dropped 3.5% as semiconductor stocks declined."`;
 
   try {
     const data = await anthropicFetch({
