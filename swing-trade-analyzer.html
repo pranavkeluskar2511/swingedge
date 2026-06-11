@@ -2136,13 +2136,27 @@ async function runAnalysis() {
 
     // ── Inject SMH RSI as sector benchmark for L6 relative strength scoring ──
     // SMH is in the universe — use its RSI as the benchmark for all other stocks.
-    // Falls back to null if SMH not in watchlist (L6 scores neutral at 50).
-    const smhData = stockData.find(s => s.ticker === 'SMH');
+    // Fix 2: If SMH not in current watchlist, fetch it silently as stealth benchmark.
+    // This ensures L6 scoring is active on ALL watchlists, not just Full Universe.
+    let smhData = stockData.find(s => s.ticker === 'SMH');
+    if (!smhData || smhData.rsi14 == null) {
+      // SMH not in watchlist — fetch it once silently, no result displayed
+      dbg(`ℹ SMH not in watchlist — fetching silently as L6 benchmark…`, 'info');
+      try {
+        smhData = await fetchTickerData('SMH');
+        if (smhData && smhData.rsi14 != null) {
+          dbg(`✓ SMH stealth benchmark: RSI=${smhData.rsi14} — L6 relative strength active on all watchlists`, 'ok');
+        } else {
+          dbg(`⚠ SMH fetch returned no RSI — L6 scoring neutral this run`, 'info');
+        }
+      } catch(e) {
+        dbg(`⚠ SMH stealth fetch failed (${e.message}) — L6 scoring neutral this run`, 'info');
+        smhData = null;
+      }
+    }
     window._smhRSI = (smhData && smhData.rsi14 != null) ? smhData.rsi14 : null;
     if (window._smhRSI !== null) {
       dbg(`✓ SMH RSI benchmark: ${window._smhRSI} — relative strength scoring active`, 'ok');
-    } else {
-      dbg(`ℹ SMH not in watchlist — L6 relative strength scoring neutral (add SMH to universe for best results)`, 'info');
     }
 
     // ── Phase 2: Pre-score ALL stocks in JS — free, instant ─────────────────
@@ -2159,6 +2173,26 @@ async function runAnalysis() {
     const jsOnly     = preScored.filter(({ pa }) => pa.scores.overall <  CLAUDE_SCORE_THRESHOLD);
 
     dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}) | ${jsOnly.length} stocks → JS-only`, 'ok');
+
+    // ── Fix 1: Log volAccumScore + intradayFade for qualifying stocks ─────────
+    // These two Phase 1 fields are silent — no log output previously.
+    // This confirms they're computing correctly before Claude sees the data.
+    if (forClaude.length > 0) {
+      const diagLines = forClaude.map(({ s, pa }) => {
+        const vol  = s.volAccumScore != null
+          ? (s.volAccumScore > 0 ? `+${s.volAccumScore}` : `${s.volAccumScore}`)
+          : '?';
+        const fade = (s.intradayFade != null)
+          ? `${Math.round(s.intradayFade * 100)}%`
+          : (s.isRegular ? '0%' : 'pre/post');
+        const l6   = pa.scores.relStrength != null ? pa.scores.relStrength : '?';
+        const relD = (window._smhRSI != null && s.rsi14 != null)
+          ? (s.rsi14 - window._smhRSI > 0 ? '+' : '') + (s.rsi14 - window._smhRSI).toFixed(1)
+          : 'n/a';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD})`;
+      }).join(' · ');
+      dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
+    }
 
     // Build JS-only results immediately — no API call needed
     jsOnly.forEach(({ s, pa }) => {
