@@ -277,7 +277,7 @@ canvas.spark-inline{display:block;width:120px;height:40px}
   <header>
     <div>
       <div class="logo">Swing<span>Edge</span> <span class="tag tag-live">LIVE</span></div>
-      <div class="tagline">Real-time data · 5-layer AI analysis · Polygon.io + Claude</div>
+      <div class="tagline">Real-time data · 6-layer AI analysis · Polygon.io + Claude</div>
     </div>
     <div class="header-right">
       <div><span class="live-dot"></span>Live market data</div>
@@ -285,7 +285,19 @@ canvas.spark-inline{display:block;width:120px;height:40px}
     </div>
   </header>
 
-  <!-- file:// notice -->
+  <!-- Market Context Panel -->
+  <div class="keys-panel" style="margin-bottom:16px">
+    <div class="panel-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span>📰 Market Context — injected into Claude prompts for macro-aware analysis</span>
+      <span style="font-size:10px;color:var(--accent)">Update daily</span>
+    </div>
+    <textarea id="marketContextInput"
+      style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px;padding:8px 10px;outline:none;resize:vertical;min-height:52px;transition:border-color .2s;line-height:1.5"
+      placeholder="e.g. US-China trade deal confirmed Jun 9, US-Iran conflict ongoing, May CPI 4.2% in-line, semi sector -5% on sell-the-news reversal…"
+      oninput="updateMarketContext(this.value)"
+    ></textarea>
+    <div style="font-size:10px;color:var(--dim);margin-top:4px">Costs ~40 extra tokens/batch (~$0.04/month). Blank = no context injected.</div>
+  </div>
   <div id="fileBanner" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--warn);line-height:1.9">
     <strong>⚠ Opened as a local file</strong><br>
     <strong>Desktop (Chrome/Edge):</strong> Works as-is — direct API calls supported. ✓<br>
@@ -527,6 +539,18 @@ window.addEventListener('DOMContentLoaded', () => {
   loadKeys();
   loadWatchlists();
   detectProxy();
+  // Load saved market context
+  try {
+    const savedCtx = localStorage.getItem('swingedge_market_context');
+    const ctxEl = document.getElementById('marketContextInput');
+    if (ctxEl) {
+      if (savedCtx) {
+        ctxEl.value = savedCtx;
+        // Also update the in-memory constant
+        if (savedCtx.trim()) window._marketContextOverride = savedCtx.trim();
+      }
+    }
+  } catch(e) {}
   ['polygonKey','anthropicKey'].forEach(id => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -549,7 +573,11 @@ function dbg(msg, type = 'info') {
   document.getElementById('debugPanel').style.display = 'block';
 }
 
-// ── Multi-Watchlist Manager ───────────────────────────────────────────────────
+// ── Market context editor ─────────────────────────────────────────────────────
+function updateMarketContext(val) {
+  window._marketContextOverride = val.trim();
+  try { localStorage.setItem('swingedge_market_context', val); } catch(e) {}
+}
 const WL_KEY         = 'swingedge_watchlists_v2';
 const WL_ACTIVE_KEY  = 'swingedge_active_wl';
 const MAX_TICKERS    = 120;
@@ -1178,13 +1206,18 @@ async function fetchTickerData(ticker) {
   const barsYearRes = await polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from365}/${today}?adjusted=true&sort=asc&limit=400`).catch(() => ({ results: [] }));
   const barsYear = barsYearRes.results || [];
 
-  const closes     = bars.map(b => b.c);
-  const closesLong = barsYear.map(b => b.c);
-  const vols       = bars.map(b => b.v);
-
-  // ── Regular session price ─────────────────────────────────────────────────
+  // ── Regular session price (use full bars array including today's partial) ───
   const lastBar = bars[bars.length - 1] || {};
   const prevBar = bars[bars.length - 2] || {};
+
+  // ── Completed bars for technicals (exclude today's partial intraday bar) ────
+  // Today's bar is incomplete until 4pm close — including it shifts RSI/MA/ATR
+  // Use slice(0,-1) to get only fully completed sessions for stable calculations
+  const closedBars     = bars.length > 1 ? bars.slice(0, -1) : bars;
+  const closedYearBars = barsYear.length > 1 ? barsYear.slice(0, -1) : barsYear;
+  const closes     = closedBars.map(b => b.c);
+  const closesLong = closedYearBars.map(b => b.c);
+  const vols       = closedBars.map(b => b.v);
 
   const livePrice      = snap?.day?.c || snap?.lastTrade?.p || null;
   const lastClosePrice = lastBar.c || snap?.prevDay?.c || null;
@@ -1297,11 +1330,11 @@ async function fetchTickerData(ticker) {
   const ma20  = sma(closes, 20);
   const ma50  = sma(closes, 50);
   const ma200 = sma(closesLong, 200);   // needs 365-day data
-  const atr14 = calcATR(bars);
+  const atr14 = calcATR(closedBars);
 
-  // 52-week range — must use 365-day bars so current price never exceeds it
-  const wk52Hi = barsYear.length ? +Math.max(...barsYear.map(b => b.h)).toFixed(2) : null;
-  const wk52Lo = barsYear.length ? +Math.min(...barsYear.map(b => b.l)).toFixed(2) : null;
+  // 52-week range — use completed year bars (exclude today's partial bar)
+  const wk52Hi = closedYearBars.length ? +Math.max(...closedYearBars.map(b => b.h)).toFixed(2) : null;
+  const wk52Lo = closedYearBars.length ? +Math.min(...closedYearBars.map(b => b.l)).toFixed(2) : null;
 
   // Trend — now reliable because MA200 uses 365-day data
   let trend = 'unknown';
@@ -1326,7 +1359,11 @@ async function fetchTickerData(ticker) {
   const shareCount = details?.share_class_shares_outstanding;
 
   // ── Chart structure: swing highs/lows and prior resistance ──────────────────
-  const recentBars = bars.slice(-60);
+  // IMPORTANT: exclude today's partial intraday bar from technicals.
+  // We fetch to=today so the last bar may be an incomplete session bar.
+  // All technical calculations (MA, RSI, ATR, resistance) must use only
+  // completed bars. The live price from the snapshot is used for current price.
+  const recentBars = closedBars.slice(-60);
 
   // Prior resistance — use wider lookback for medium/long holds
   // Short: 15-bar lookback (recent price action)
@@ -1353,7 +1390,30 @@ async function fetchTickerData(ticker) {
   const swingLo60 = recentBars.length ? +Math.min(...recentBars.map(b => b.l)).toFixed(2) : null;
 
   // Recent bars for spark (last 30)
-  const sparkBars = bars.slice(-30).map(b => b.c);
+  const sparkBars = closedBars.slice(-30).map(b => b.c);
+
+  // ── Intraday fade: how much of the opening gap has been given back ────────────
+  // 0 = held all gains from open, 1 = gave back everything, >1 = reversed below open
+  // Only meaningful during regular session when we have today's high and open
+  let intradayFade = null;
+  if (isRegular && snap?.day?.h && snap?.day?.o && price && snap.day.h > snap.day.o) {
+    intradayFade = +((snap.day.h - price) / (snap.day.h - snap.day.o)).toFixed(2);
+    intradayFade = Math.max(0, Math.min(2, intradayFade)); // clamp to 0-2 range
+  }
+
+  // ── Volume accumulation score: OBV direction over last 5 completed bars ───────
+  // Positive = accumulation (high-vol up days), Negative = distribution (high-vol down days)
+  let volAccumScore = 0;
+  if (closedBars.length >= 6 && avgVol20) {
+    const last5 = closedBars.slice(-5);
+    last5.forEach((bar, i) => {
+      if (i === 0) return;
+      const priceUp = bar.c > last5[i-1].c;
+      const volRatioBar = bar.v / avgVol20;
+      if (priceUp  && volRatioBar >= 1.2) volAccumScore += 1;  // high-vol up = accumulation
+      if (!priceUp && volRatioBar >= 1.2) volAccumScore -= 1;  // high-vol down = distribution
+    });
+  }
 
   return {
     ticker, companyName, sector, marketCap, description,
@@ -1361,9 +1421,12 @@ async function fetchTickerData(ticker) {
     prevClose: prevClose ? +prevClose.toFixed(2) : 0,
     prevSessionClose: prevSessionClose ? +prevSessionClose.toFixed(2) : 0,
     todayOpen: todayOpen ? +todayOpen.toFixed(2) : null,
+    todayHigh: snap?.day?.h ? +snap.day.h.toFixed(2) : null,
     changePct, priceSource, priceIsLive, priceIsClose, priceIsExt,
     isPreMkt, isPostMkt, isRegular,
     gapPct, gapSignal, gapRef: gapRef ? +parseFloat(gapRef).toFixed(2) : null,
+    intradayFade,      // NEW: 0=held gains, 1=gave it all back, null=pre-market
+    volAccumScore,     // NEW: +ve=accumulation, -ve=distribution over last 5 bars
     preMktHigh, preMktLow, preMktVol,
     postMktHigh, postMktLow,
     volume, avgVol20, volRatio,
@@ -1371,7 +1434,7 @@ async function fetchTickerData(ticker) {
     wk52Hi, wk52Lo, trend,
     priorResistance, priorSupport, consHigh, consLow, consRange, swingHi60, swingLo60,
     closes: closes.slice(-30), sparkBars,
-    rawBars: bars.slice(-60)
+    rawBars: closedBars.slice(-60)
   };
 }
 
@@ -1439,6 +1502,22 @@ function preAnalyse(s, holdPeriod, minRR) {
     if      (s.volRatio >= 1.5) l2 += 15; // strong volume confirms move
     else if (s.volRatio >= 1.0) l2 += 5;
     else if (s.volRatio <  0.7) l2 -= 10; // weak volume — suspect breakout
+  }
+  // Volume accumulation/distribution over last 5 bars (NEW)
+  if (s.volAccumScore != null) {
+    if      (s.volAccumScore >= 2)  l2 += 8;  // strong accumulation pattern
+    else if (s.volAccumScore >= 1)  l2 += 4;  // mild accumulation
+    else if (s.volAccumScore <= -2) l2 -= 12; // strong distribution — exit pressure
+    else if (s.volAccumScore <= -1) l2 -= 6;  // mild distribution
+  }
+  // Intraday fade penalty — gap up then sold off = distribution signal (NEW)
+  // Only apply during regular session when intradayFade is available
+  if (s.intradayFade != null && s.gapPct != null && s.gapPct >= 1) {
+    // Only penalise fade on gap-up days — a gap-down day fading further is different
+    if      (s.intradayFade >= 0.8) l2 -= 20; // gave back ≥80% of gap-up — severe distribution
+    else if (s.intradayFade >= 0.6) l2 -= 12; // gave back 60-80% — clear fade
+    else if (s.intradayFade >= 0.4) l2 -= 6;  // gave back 40-60% — mild fade
+    // intradayFade < 0.4 means held most of the gap — no penalty, constructive
   }
   // Price vs prior resistance
   if (s.priorResistance && p > 0) {
@@ -1562,13 +1641,34 @@ function preAnalyse(s, holdPeriod, minRR) {
   if (s.consRange && s.consRange > 0) l5 += 5; // clean consolidation range available
   l5 = clamp(l5, 0, 100);
 
-  // ── Overall score — weighted average ────────────────────────────────────
+  // ── Layer 6: Relative strength vs SMH benchmark (0–100) ─────────────────
+  // Compares this stock's RSI to the SMH ETF benchmark RSI.
+  // Positive delta = relative strength (stock stronger than sector).
+  // Negative delta = relative weakness (stock lagging sector).
+  // SMH RSI is injected by runAnalysis() after all stocks are scored.
+  // Falls back to neutral (50) if benchmark not yet available.
+  let l6 = 50;
+  const benchmarkRSI = (typeof window._smhRSI === 'number') ? window._smhRSI : null;
+  if (benchmarkRSI !== null && rsi !== null) {
+    const relStrength = rsi - benchmarkRSI;
+    if      (relStrength >= 10) l6 += 20;  // strong relative strength — leading sector
+    else if (relStrength >=  5) l6 += 10;  // mild relative strength
+    else if (relStrength >=  0) l6 +=  5;  // in-line with sector
+    else if (relStrength >= -5) l6 -=  5;  // mild relative weakness
+    else if (relStrength >= -10)l6 -= 15;  // clear relative weakness — lagging
+    else                         l6 -= 25;  // significant underperformance vs sector
+  }
+  l6 = clamp(l6, 0, 100);
+
+  // ── Overall score — weighted average (6 layers) ──────────────────────────
+  // Weights rebalanced: L1–L5 each reduced 1% to accommodate new L6 at 5%
   const overallScore = Math.round(
-    l1 * 0.25 + // setup quality
-    l2 * 0.30 + // technicals (most weight — richest data)
-    l3 * 0.15 + // fundamental
-    l4 * 0.15 + // risk parameters
-    l5 * 0.15   // entry/exit plan
+    l1 * 0.24 + // setup quality       (was 0.25)
+    l2 * 0.29 + // technicals          (was 0.30) — still highest weight
+    l3 * 0.14 + // fundamental         (was 0.15)
+    l4 * 0.14 + // risk parameters     (was 0.15)
+    l5 * 0.14 + // entry/exit plan     (was 0.15)
+    l6 * 0.05   // relative strength   (NEW)
   );
 
   // ── Verdict ─────────────────────────────────────────────────────────────
@@ -1595,7 +1695,7 @@ function preAnalyse(s, holdPeriod, minRR) {
     rrIsChartAnchored: targetBasis.includes('resistance') || targetBasis.includes('swing') || targetBasis.includes('52w') || targetBasis.includes('measured'),
     scores: {
       setup: l1, technical: l2, fundamental: l3,
-      risk: l4, plan: l5, overall: overallScore
+      risk: l4, plan: l5, relStrength: l6, overall: overallScore
     },
     verdict
   };
@@ -1689,12 +1789,35 @@ function generateNotes(s, pa) {
   // Layer 5: Entry/exit plan
   const l5note = `R:R ${pa.actualRR} · target ${pa.targetBasis} · entry $${pa.entry}`;
 
+  // Layer 6: Relative strength vs SMH benchmark (NEW)
+  let l6note = 'Relative strength — SMH not in universe';
+  const benchRSI = (typeof window._smhRSI === 'number') ? window._smhRSI : null;
+  if (benchRSI !== null && s.rsi14 !== null) {
+    const delta = +(s.rsi14 - benchRSI).toFixed(1);
+    const sign  = delta >= 0 ? '+' : '';
+    if      (delta >= 10)  l6note = `RSI ${sign}${delta} vs SMH — leading sector`;
+    else if (delta >=  5)  l6note = `RSI ${sign}${delta} vs SMH — mild strength`;
+    else if (delta >=  0)  l6note = `RSI ${sign}${delta} vs SMH — in-line`;
+    else if (delta >= -5)  l6note = `RSI ${sign}${delta} vs SMH — mild weakness`;
+    else if (delta >= -10) l6note = `RSI ${sign}${delta} vs SMH — lagging sector`;
+    else                   l6note = `RSI ${sign}${delta} vs SMH — significant underperformance`;
+    // Append intraday fade if available
+    if (s.intradayFade !== null && s.gapPct !== null && s.gapPct >= 1) {
+      const fadePct = Math.round(s.intradayFade * 100);
+      if      (fadePct >= 80) l6note += ` · fade ${fadePct}% ⚠ distribution`;
+      else if (fadePct >= 60) l6note += ` · fade ${fadePct}% — gave back gap`;
+      else if (fadePct >= 40) l6note += ` · fade ${fadePct}% — mild fade`;
+      else                    l6note += ` · fade ${fadePct}% — held gap ✓`;
+    }
+  }
+
   return {
-    setup:     l1note,
-    technical: l2note,
+    setup:       l1note,
+    technical:   l2note,
     fundamental: l3note,
-    risk:      l4note,
-    plan:      l5note,
+    risk:        l4note,
+    plan:        l5note,
+    relStrength: l6note,
   };
 }
 
@@ -1708,11 +1831,24 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime) {
   const stockLines = stocks.map(s => {
     const pa = preAnalyse(s, holdPeriod, parseFloat(minRR));
     if (!pa) return `${s.ticker}: skip — no price`;
-    return `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}`;
+    // Include intraday fade and relative strength signals if available
+    const fadeStr = (s.intradayFade != null) ? ` fade=${(s.intradayFade*100).toFixed(0)}%` : '';
+    const relStr  = (window._smhRSI != null && s.rsi14 != null)
+      ? ` relVsSMH=${(s.rsi14 - window._smhRSI) > 0 ? '+' : ''}${(s.rsi14 - window._smhRSI).toFixed(1)}`
+      : '';
+    const volStr  = (s.volAccumScore != null && s.volAccumScore !== 0)
+      ? ` volAccum=${s.volAccumScore > 0 ? '+' : ''}${s.volAccumScore}`
+      : '';
+    return `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}`;
   }).join('\n');
 
-  return `Swing trade analyst. Write 3 trade sentences per stock. Hold=${holdLabel} Regime=${regime}
+  // Use editable market context if set, otherwise use default placeholder
+  const contextToInject = (window._marketContextOverride && window._marketContextOverride.length > 10)
+    ? `Context: ${window._marketContextOverride}`
+    : '';  // blank = no context injected if user hasn't filled it in
 
+  return `Swing trade analyst. Write 3 trade sentences per stock. Hold=${holdLabel} Regime=${regime}
+${contextToInject ? '\n' + contextToInject + '\n' : ''}
 ${stockLines}
 
 Return ONLY a JSON array. No markdown.
@@ -1748,8 +1884,14 @@ function parseJSON(raw) {
 
 // ── Main run ──────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 6;        // 6 stocks per Claude call — eliminates 5+1 split waste
-const POLY_CONCURRENCY = 8;  // 8 parallel Polygon workers for faster 120-stock fetches
+const POLY_CONCURRENCY = 5;  // 5 parallel Polygon workers — reduced from 8 to prevent Render throttle stalls
 let _isRunning = false; // guard against double-tap / double-click
+
+// ── Market Context — update manually each morning before running ──────────────
+// Injected into every Claude batch prompt. Costs ~40 tokens but dramatically
+// improves analysis quality by giving Claude macro awareness.
+// Update this with 2-3 sentences summarising current macro/sector conditions.
+const MARKET_CONTEXT = `Market context (update daily): Check recent news for current macro conditions including Fed policy, geopolitical risks, and sector-specific catalysts before running. Replace this placeholder with today's context (e.g. "US-China trade deal confirmed Jun 9, US-Iran conflict ongoing, May CPI 4.2% in-line, semi sector -5% from trade deal highs on sell-the-news reversal").`;
 
 async function runAnalysis() {
   // Prevent concurrent runs — mobile double-tap protection
@@ -1818,6 +1960,17 @@ async function runAnalysis() {
     setStep(0, 'done');
     setStep(1, 'active');
     dbg(`✓ Polygon fetch complete — ${stockData.filter(s=>s.price>0).length}/${tickers.length} with valid prices`, 'ok');
+
+    // ── Inject SMH RSI as sector benchmark for L6 relative strength scoring ──
+    // SMH is in the universe — use its RSI as the benchmark for all other stocks.
+    // Falls back to null if SMH not in watchlist (L6 scores neutral at 50).
+    const smhData = stockData.find(s => s.ticker === 'SMH');
+    window._smhRSI = (smhData && smhData.rsi14 != null) ? smhData.rsi14 : null;
+    if (window._smhRSI !== null) {
+      dbg(`✓ SMH RSI benchmark: ${window._smhRSI} — relative strength scoring active`, 'ok');
+    } else {
+      dbg(`ℹ SMH not in watchlist — L6 relative strength scoring neutral (add SMH to universe for best results)`, 'info');
+    }
 
     // ── Phase 2: Pre-score ALL stocks in JS — free, instant ─────────────────
     const CLAUDE_SCORE_THRESHOLD = 80; // only send to Claude if score meets this
@@ -2167,6 +2320,7 @@ function buildResult(live, pa, claudeRow) {
       { name: 'Fundamental',       score: pa.scores.fundamental, note: notes.fundamental },
       { name: 'Risk parameters',   score: pa.scores.risk,        note: notes.risk        },
       { name: 'Entry/exit plan',   score: pa.scores.plan,        note: notes.plan        },
+      { name: 'Rel. strength',     score: pa.scores.relStrength, note: notes.relStrength },
     ],
     entryNote: claudeRow.entryNote || '',
     exitNote:  claudeRow.exitNote  || '',
@@ -2234,7 +2388,9 @@ async function fetchAllParallel(tickerList, concurrency) {
       try {
         const data = await fetchTickerData(ticker);
         results[i] = data;
-        dbg(`✓ ${ticker}: $${data.price} (${data.priceSource})${data.gapPct !== null ? ` gap ${data.gapPct >= 0 ? '+' : ''}${data.gapPct}%` : ''}, RSI=${data.rsi14}, ATR=${data.atr14}`, 'ok');
+        const fadeDbg = (data.intradayFade !== null && data.gapPct !== null && data.gapPct >= 1)
+          ? `, fade=${Math.round(data.intradayFade*100)}%` : '';
+        dbg(`✓ ${ticker}: $${data.price} (${data.priceSource})${data.gapPct !== null ? ` gap ${data.gapPct >= 0 ? '+' : ''}${data.gapPct}%` : ''}, RSI=${data.rsi14}, ATR=${data.atr14}${fadeDbg}`, 'ok');
       } catch(e) {
         dbg(`✗ ${ticker}: ${e.message}`, 'error');
         results[i] = {
