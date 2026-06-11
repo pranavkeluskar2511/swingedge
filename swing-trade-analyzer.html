@@ -292,16 +292,27 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 
   <!-- Market Context Panel -->
   <div class="keys-panel" style="margin-bottom:16px">
-    <div class="panel-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <div class="panel-label" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:6px">
       <span>📰 Market Context — injected into Claude prompts for macro-aware analysis</span>
-      <span style="font-size:10px;color:var(--accent)">Update daily</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span id="ctxStatus" style="font-size:10px;color:var(--dim);display:none"></span>
+        <button id="fetchCtxBtn" onclick="fetchMarketContext()"
+          style="display:flex;align-items:center;gap:5px;background:var(--accent2);color:#fff;border:none;border-radius:5px;font-family:var(--mono);font-size:10px;font-weight:600;padding:4px 11px;cursor:pointer;letter-spacing:.04em;transition:all .15s;white-space:nowrap"
+          title="Auto-generate today's macro context using Claude + web search (~$0.002)">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+          <span id="fetchCtxLabel">Fetch today's context</span>
+        </button>
+        <span style="font-size:10px;color:var(--accent)">Update daily</span>
+      </div>
     </div>
     <textarea id="marketContextInput"
       style="width:100%;background:var(--bg);border:1px solid var(--border2);border-radius:6px;color:var(--text);font-family:var(--mono);font-size:11px;padding:8px 10px;outline:none;resize:vertical;min-height:52px;transition:border-color .2s;line-height:1.5"
       placeholder="e.g. US-China trade deal confirmed Jun 9, US-Iran conflict ongoing, May CPI 4.2% in-line, semi sector -5% on sell-the-news reversal…"
       oninput="updateMarketContext(this.value)"
     ></textarea>
-    <div style="font-size:10px;color:var(--dim);margin-top:4px">Costs ~40 extra tokens/batch (~$0.04/month). Blank = no context injected.</div>
+    <div style="font-size:10px;color:var(--dim);margin-top:4px">Injected into Claude prompts (~40 tokens/batch). Blank = no context. Auto-fetch ~$0.002/click.</div>
   </div>
   <div id="fileBanner" style="display:none;background:rgba(245,166,35,.08);border:1px solid rgba(245,166,35,.25);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:11px;color:var(--warn);line-height:1.9">
     <strong>⚠ Opened as a local file</strong><br>
@@ -750,6 +761,99 @@ function toggleDbgFilter(type) {
 function updateMarketContext(val) {
   window._marketContextOverride = val.trim();
   try { localStorage.setItem('swingedge_market_context', val); } catch(e) {}
+}
+
+// ── Auto-fetch market context via Claude + web search ─────────────────────────
+// One-time call (~$0.002). Searches for today's macro/semi news and writes
+// a concise 2-sentence context ready to inject into SwingEdge prompts.
+async function fetchMarketContext() {
+  if (!ANTH_KEY) { alert('Enter your Anthropic API key first.'); return; }
+
+  const btn   = document.getElementById('fetchCtxBtn');
+  const label = document.getElementById('fetchCtxLabel');
+  const status = document.getElementById('ctxStatus');
+  const ta    = document.getElementById('marketContextInput');
+
+  // Loading state
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+  label.textContent = 'Fetching…';
+  if (status) { status.style.display = 'inline'; status.style.color = 'var(--muted)'; status.textContent = 'Searching news…'; }
+
+  const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const prompt = `Today is ${today}. You are a market context assistant for a semiconductor and AI stock swing trader.
+
+Search the web for today's latest market news and write a SINGLE concise paragraph (2-3 sentences max, ~50 words) summarising the current macro environment relevant to semiconductor and AI stocks.
+
+Cover the most relevant of: Fed/rates/inflation, geopolitical risks (Middle East, US-China), sector catalysts (earnings, guidance, trade policy), notable semi/AI stock moves today.
+
+Format: plain text only, no bullet points, no headers. Start directly with the context. Example format:
+"US-Iran conflict ongoing with airstrikes exchanged Jun 10, oil at $88 adding inflation pressure. May CPI 4.2% in-line with estimates, no rate cut expected in 2026. Semi sector down 5% from June 9 trade deal highs on sell-the-news reversal."
+
+Write only the context paragraph. Nothing else.`;
+
+  try {
+    const data = await anthropicFetch({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 200,
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    if (data.error) throw new Error(data.error.message);
+
+    // Extract text from response — may have tool_use blocks before final text
+    let contextText = '';
+    if (Array.isArray(data.content)) {
+      // Get the last text block — that's Claude's final answer after searching
+      const textBlocks = data.content.filter(b => b.type === 'text');
+      contextText = textBlocks[textBlocks.length - 1]?.text?.trim() || '';
+    } else if (typeof data.content === 'string') {
+      contextText = data.content.trim();
+    }
+
+    // Strip any markdown artifacts
+    contextText = contextText
+      .replace(/^["']|["']$/g, '')   // remove surrounding quotes
+      .replace(/\*\*/g, '')           // remove bold markers
+      .trim();
+
+    if (!contextText || contextText.length < 20) {
+      throw new Error('Response too short — try again');
+    }
+
+    // Populate textarea and save
+    if (ta) {
+      ta.value = contextText;
+      ta.style.borderColor = 'var(--accent)';
+      setTimeout(() => ta.style.borderColor = '', 2000);
+    }
+    updateMarketContext(contextText);
+
+    // Cost estimate
+    const tokIn  = data.usage?.input_tokens  || 0;
+    const tokOut = data.usage?.output_tokens || 0;
+    const cost   = ((tokIn * 3 + tokOut * 15) / 1_000_000).toFixed(4);
+
+    label.textContent = 'Fetch today\'s context';
+    if (status) {
+      status.style.color = 'var(--accent)';
+      status.textContent = `✓ Updated — $${cost}`;
+      setTimeout(() => { if (status) status.style.display = 'none'; }, 4000);
+    }
+
+  } catch(err) {
+    label.textContent = 'Fetch today\'s context';
+    if (status) {
+      status.style.color = 'var(--bear)';
+      status.textContent = `✕ ${err.message.slice(0, 60)}`;
+      setTimeout(() => { if (status) status.style.display = 'none'; }, 5000);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.style.opacity = '1';
+  }
 }
 const WL_KEY         = 'swingedge_watchlists_v2';
 const WL_ACTIVE_KEY  = 'swingedge_active_wl';
