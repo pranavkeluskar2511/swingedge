@@ -431,7 +431,7 @@ canvas.spark-inline{display:block;width:120px;height:40px}
           </svg>
           <span id="fetchCtxLabel">Fetch today's context</span>
         </button>
-        <span style="font-size:10px;color:var(--accent)">Update daily</span>
+        <span id="ctxDateBadge" style="font-size:10px;color:var(--accent)">Update daily</span>
       </div>
     </div>
     <textarea id="marketContextInput"
@@ -717,15 +717,36 @@ window.addEventListener('DOMContentLoaded', () => {
   loadWatchlists();
   initPositionTracker();
   detectProxy();
-  // Load saved market context
+  // Load saved market context — with staleness check
   try {
-    const savedCtx = localStorage.getItem('swingedge_market_context');
-    const ctxEl = document.getElementById('marketContextInput');
-    if (ctxEl) {
-      if (savedCtx) {
-        ctxEl.value = savedCtx;
-        // Also update the in-memory constant
+    const savedCtx  = localStorage.getItem('swingedge_market_context');
+    const savedDate = localStorage.getItem('swingedge_market_context_date');
+    const todayStr  = _ctxTodayStr();
+    const ctxEl     = document.getElementById('marketContextInput');
+
+    if (savedCtx && savedCtx.trim()) {
+      const isStale = savedDate && savedDate !== todayStr;
+
+      if (isStale) {
+        // Auto-clear stale context — do NOT inject yesterday's macro into today's prompts
+        localStorage.removeItem('swingedge_market_context');
+        localStorage.removeItem('swingedge_market_context_date');
+        window._marketContextOverride = '';
+        if (ctxEl) ctxEl.value = '';
+        _renderCtxDateBadge(savedDate, true);
+        // Show stale warning in ctxStatus
+        const status = document.getElementById('ctxStatus');
+        if (status) {
+          status.style.display = 'inline';
+          status.style.color   = 'var(--warn)';
+          status.textContent   = `⚠ Context from ${savedDate} auto-cleared — fetch today's`;
+          // Don't auto-hide this one — user should see it
+        }
+      } else {
+        // Same day — load normally
+        if (ctxEl) ctxEl.value = savedCtx;
         if (savedCtx.trim()) window._marketContextOverride = savedCtx.trim();
+        _renderCtxDateBadge(savedDate || todayStr, false);
       }
     }
   } catch(e) {}
@@ -896,14 +917,49 @@ function toggleDbgFilter(type) {
 // ── Market context editor ─────────────────────────────────────────────────────
 function updateMarketContext(val) {
   window._marketContextOverride = val.trim();
-  try { localStorage.setItem('swingedge_market_context', val); } catch(e) {}
+  try {
+    localStorage.setItem('swingedge_market_context', val);
+    // Stamp today's date so staleness check knows when this was written
+    const todayStr = _ctxTodayStr();
+    localStorage.setItem('swingedge_market_context_date', todayStr);
+    _renderCtxDateBadge(todayStr, false);
+  } catch(e) {}
+}
+
+// Returns today's date as YYYY-MM-DD in local timezone
+function _ctxTodayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+// Updates the date badge next to the fetch button
+function _renderCtxDateBadge(dateStr, isStale) {
+  const badge = document.getElementById('ctxDateBadge');
+  if (!badge) return;
+  if (!dateStr) { badge.textContent = 'Update daily'; badge.style.color = 'var(--accent)'; return; }
+  // Format as "Mon Jun 9"
+  const d = new Date(dateStr + 'T12:00:00'); // noon avoids timezone edge cases
+  const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  if (isStale) {
+    badge.textContent = `⚠ From ${label} — stale`;
+    badge.style.color = 'var(--warn)';
+    badge.title = 'Context is from a previous day — auto-cleared. Fetch fresh or type today\'s context.';
+  } else {
+    badge.textContent = `✓ ${label}`;
+    badge.style.color = 'var(--accent)';
+    badge.title = '';
+  }
 }
 
 function clearMarketContext() {
   window._marketContextOverride = '';
-  try { localStorage.removeItem('swingedge_market_context'); } catch(e) {}
+  try {
+    localStorage.removeItem('swingedge_market_context');
+    localStorage.removeItem('swingedge_market_context_date');
+  } catch(e) {}
   const ta = document.getElementById('marketContextInput');
   if (ta) { ta.value = ''; ta.style.borderColor = 'var(--bear)'; setTimeout(() => { ta.style.borderColor = ''; }, 1500); }
+  _renderCtxDateBadge(null, false);
   const status = document.getElementById('ctxStatus');
   if (status) {
     status.style.display = 'inline';
