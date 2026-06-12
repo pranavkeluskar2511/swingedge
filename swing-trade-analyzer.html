@@ -2677,6 +2677,35 @@ async function runAnalysis() {
       }
     });
 
+    // ── ETF exclusion — never send benchmark ETFs to Claude ──────────────────
+    // SMH/SOXX/BOTZ are in the universe for L6 benchmark purposes only.
+    // They can score ≥80 on calm days — exclude them from qualifying.
+    const ETF_EXCLUSIONS = new Set(['SMH', 'SOXX', 'BOTZ']);
+
+    // ── L6 selloff dampener — correct inflation during broad sector selloffs ──
+    // When SMH gaps down hard, stocks that drop "less than average" get
+    // inflated Δ values. A Δ=+13 when SMH is −4% means the stock dropped
+    // 8% vs sector's 4% — not genuine strength. Dampen L6 scores proportionally.
+    // Threshold: SMH day-change ≤ −3% triggers dampener.
+    const SMH_DAMPENER_THRESHOLD = -3.0; // % SMH gap-down to activate
+    const smhGapPct = smhData ? (smhData.gap ?? 0) : 0;
+    const selloffDampenerActive = smhGapPct <= SMH_DAMPENER_THRESHOLD;
+    if (selloffDampenerActive) {
+      // Scale factor: at −3% SMH gap → 0.7x L6 score; at −6% → 0.4x; linear
+      const dampFactor = Math.max(0.3, 1 + (smhGapPct + 3) * 0.1);
+      preScored.forEach(({ pa }) => {
+        if (pa.scores && pa.scores.l6 != null) {
+          pa.scores.l6 = Math.round(pa.scores.l6 * dampFactor);
+          // Recompute overall with dampened L6 (L6 weight = 5%)
+          const { l1, l2, l3, l4, l5, l6 } = pa.scores;
+          pa.scores.overall = Math.round(
+            l1 * 0.24 + l2 * 0.29 + l3 * 0.14 + l4 * 0.14 + l5 * 0.14 + l6 * 0.05
+          );
+        }
+      });
+      dbg(`⚠ L6 selloff dampener active — SMH gap ${smhGapPct.toFixed(1)}%, dampFactor=${dampFactor.toFixed(2)}x. L6 scores compressed.`, 'info');
+    }
+
     // ── ADR deduplication — drop lower-value ADR when both legs qualify ────────
     // ASMIY is the US ADR for ASML (same underlying). When both score ≥80,
     // keep whichever has news (or higher score if tied). Drop the other to JS-only.
@@ -2688,7 +2717,7 @@ async function runAnalysis() {
     // Split into Claude-worthy vs JS-only
     const MAX_CLAUDE_QUALIFIERS = 12; // cost cap — selloff days can push 14+ stocks through
     const allQualified = preScored
-      .filter(({ pa }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD)
+      .filter(({ pa, s }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD && !ETF_EXCLUSIONS.has(s.ticker))
       .sort((a, b) => b.pa.scores.overall - a.pa.scores.overall); // highest score first
 
     // ADR dedup: mark the lower-priority leg for demotion before cap is applied
@@ -2714,15 +2743,19 @@ async function runAnalysis() {
       .slice(MAX_CLAUDE_QUALIFIERS);
 
     const jsOnly = [
-      ...preScored.filter(({ pa }) => pa.scores.overall < CLAUDE_SCORE_THRESHOLD),
+      ...preScored.filter(({ pa, s }) => pa.scores.overall < CLAUDE_SCORE_THRESHOLD || ETF_EXCLUSIONS.has(s.ticker)),
       ...allQualified.filter(x => dedupDropped.has(x.s.ticker)),
       ...cappedOut,
     ];
 
+    const etfExcluded = preScored.filter(({ s, pa }) => ETF_EXCLUSIONS.has(s.ticker) && pa.scores.overall >= CLAUDE_SCORE_THRESHOLD);
+    if (etfExcluded.length > 0) {
+      dbg(`◈ ETF exclusion: ${etfExcluded.map(x => x.s.ticker).join(', ')} scored ≥${CLAUDE_SCORE_THRESHOLD} but excluded (benchmark ETFs)`, 'info');
+    }
     if (cappedOut.length > 0) {
       dbg(`⚠ Qualifier cap: ${allQualified.length - dedupDropped.size} eligible after dedup — capped at ${MAX_CLAUDE_QUALIFIERS}. Dropped to JS-only: ${cappedOut.map(x => x.s.ticker).join(', ')}`, 'info');
     }
-    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}${dedupDropped.size > 0 ? `, dedup −${dedupDropped.size}` : ''}${cappedOut.length > 0 ? `, cap @${MAX_CLAUDE_QUALIFIERS}` : ''}) | ${jsOnly.length} stocks → JS-only`, 'ok');
+    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}${dedupDropped.size > 0 ? `, dedup −${dedupDropped.size}` : ''}${etfExcluded.length > 0 ? `, ETF −${etfExcluded.length}` : ''}${cappedOut.length > 0 ? `, cap @${MAX_CLAUDE_QUALIFIERS}` : ''}${selloffDampenerActive ? `, dampener ON` : ''}) | ${jsOnly.length} stocks → JS-only`, 'ok');
 
     // ── Fix 1: Log volAccumScore + intradayFade for qualifying stocks ─────────
     // These two Phase 1 fields are silent — no log output previously.
