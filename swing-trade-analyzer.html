@@ -2619,23 +2619,52 @@ async function runAnalysis() {
       pa: preAnalyse(s, holdPeriod, minRRnum)
     })).filter(({ pa }) => pa !== null);
 
+    // ── ADR deduplication — drop lower-value ADR when both legs qualify ────────
+    // ASMIY is the US ADR for ASML (same underlying). When both score ≥80,
+    // keep whichever has news (or higher score if tied). Drop the other to JS-only.
+    // Config: add future correlated pairs here as [primaryTicker, adrTicker].
+    const ADR_PAIRS = [
+      ['ASML', 'ASMIY'],
+    ];
+
     // Split into Claude-worthy vs JS-only
     const MAX_CLAUDE_QUALIFIERS = 12; // cost cap — selloff days can push 14+ stocks through
     const allQualified = preScored
       .filter(({ pa }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD)
       .sort((a, b) => b.pa.scores.overall - a.pa.scores.overall); // highest score first
 
-    const forClaude = allQualified.slice(0, MAX_CLAUDE_QUALIFIERS);
-    const cappedOut = allQualified.slice(MAX_CLAUDE_QUALIFIERS); // qualified but capped → JS-only
-    const jsOnly    = [
+    // ADR dedup: mark the lower-priority leg for demotion before cap is applied
+    const dedupDropped = new Set();
+    ADR_PAIRS.forEach(([primary, adr]) => {
+      const hasPrimary = allQualified.find(x => x.s.ticker === primary);
+      const hasAdr     = allQualified.find(x => x.s.ticker === adr);
+      if (hasPrimary && hasAdr) {
+        // Keep whichever has higher score; on a tie keep primary (exchange-listed)
+        const keepPrimary = hasPrimary.pa.scores.overall >= hasAdr.pa.scores.overall;
+        const dropped = keepPrimary ? adr : primary;
+        dedupDropped.add(dropped);
+        dbg(`◈ ADR dedup: ${primary} & ${adr} both qualified — keeping ${keepPrimary ? primary : adr}, dropping ${dropped} to JS-only`, 'info');
+      }
+    });
+
+    const forClaude = allQualified
+      .filter(x => !dedupDropped.has(x.s.ticker))
+      .slice(0, MAX_CLAUDE_QUALIFIERS);
+
+    const cappedOut = allQualified
+      .filter(x => !dedupDropped.has(x.s.ticker))
+      .slice(MAX_CLAUDE_QUALIFIERS);
+
+    const jsOnly = [
       ...preScored.filter(({ pa }) => pa.scores.overall < CLAUDE_SCORE_THRESHOLD),
+      ...allQualified.filter(x => dedupDropped.has(x.s.ticker)),
       ...cappedOut,
     ];
 
     if (cappedOut.length > 0) {
-      dbg(`⚠ Qualifier cap: ${allQualified.length} stocks scored ≥${CLAUDE_SCORE_THRESHOLD} — capped at ${MAX_CLAUDE_QUALIFIERS}. Dropped to JS-only: ${cappedOut.map(x => x.s.ticker).join(', ')}`, 'info');
+      dbg(`⚠ Qualifier cap: ${allQualified.length - dedupDropped.size} eligible after dedup — capped at ${MAX_CLAUDE_QUALIFIERS}. Dropped to JS-only: ${cappedOut.map(x => x.s.ticker).join(', ')}`, 'info');
     }
-    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}${cappedOut.length > 0 ? `, top ${MAX_CLAUDE_QUALIFIERS} by score` : ''}) | ${jsOnly.length} stocks → JS-only`, 'ok');
+    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}${dedupDropped.size > 0 ? `, dedup −${dedupDropped.size}` : ''}${cappedOut.length > 0 ? `, cap @${MAX_CLAUDE_QUALIFIERS}` : ''}) | ${jsOnly.length} stocks → JS-only`, 'ok');
 
     // ── Fix 1: Log volAccumScore + intradayFade for qualifying stocks ─────────
     // These two Phase 1 fields are silent — no log output previously.
