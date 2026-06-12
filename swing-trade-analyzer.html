@@ -347,8 +347,37 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .pos-act-btn:hover{color:var(--bear)}
 .pos-act-edit:hover{color:var(--accent2)!important}
 .pos-loading{padding:12px 18px;font-size:11px;color:var(--dim);font-style:italic}
+/* ── P2B Earnings Calendar ───────────────────────────────────────────────── */
+.earn-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.earn-panel-header{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;background:var(--surface2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none;transition:background .12s}
+.earn-panel-header:hover{background:var(--bg)}
+.earn-header-left{display:flex;align-items:center;gap:8px}
+.earn-header-title{font-family:var(--display);font-size:12px;font-weight:700;letter-spacing:.03em}
+.earn-chevron{font-size:10px;color:var(--dim);transition:transform .2s}
+.earn-panel-body{overflow:hidden;transition:max-height .3s cubic-bezier(.4,0,.2,1)}
+.earn-panel-body.collapsed{max-height:0!important}
+.earn-empty{padding:12px 18px;font-size:11px;color:var(--dim);font-style:italic}
+.earn-table{width:100%;border-collapse:collapse}
+.earn-table thead th{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:6px 14px;border-bottom:1px solid var(--border);text-align:left;background:var(--surface);font-weight:500}
+.earn-table thead th.th-r{text-align:right}
+.earn-table tbody tr{border-bottom:1px solid var(--border);transition:background .12s}
+.earn-table tbody tr:last-child{border-bottom:none}
+.earn-table tbody tr:hover{background:var(--surface2)}
+.earn-table td{padding:7px 14px;vertical-align:middle;font-size:12px}
+.earn-table td.td-r{text-align:right}
+.earn-ticker{font-family:var(--display);font-size:13px;font-weight:800}
+.earn-company{font-size:10px;color:var(--dim);margin-top:1px}
+.earn-days-imminent{color:var(--bear);font-weight:700;font-family:var(--mono);font-size:11px}
+.earn-days-soon{color:var(--warn);font-weight:600;font-family:var(--mono);font-size:11px}
+.earn-days-ok{color:var(--muted);font-family:var(--mono);font-size:11px}
+.earn-badge{display:inline-flex;align-items:center;font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 7px;border-radius:3px;text-transform:uppercase;white-space:nowrap}
+.earn-badge-imminent{background:rgba(217,48,85,.1);color:var(--bear);border:1px solid rgba(217,48,85,.3)}
+.earn-badge-soon{background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.3)}
+.earn-badge-watch{background:rgba(26,111,204,.08);color:var(--accent2);border:1px solid rgba(26,111,204,.2)}
+/* Earnings warning on result cards */
+.earn-warning{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:3px;background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.3);margin-left:6px;white-space:nowrap}
+.earn-warning-imminent{background:rgba(217,48,85,.1);color:var(--bear);border:1px solid rgba(217,48,85,.3)}
 </style>
-</head>
 <body>
 <div class="app">
 
@@ -414,6 +443,24 @@ canvas.spark-inline{display:block;width:120px;height:40px}
       </div>
       <!-- Position rows rendered here -->
       <div id="posTableWrap"></div>
+    </div>
+  </div>
+
+  <!-- P2B Earnings Calendar Panel -->
+  <div class="earn-panel" id="earnPanel">
+    <div class="earn-panel-header" onclick="toggleEarnPanel()">
+      <div class="earn-header-left">
+        <span style="font-size:14px">📅</span>
+        <span class="earn-header-title">Earnings Calendar</span>
+        <span id="earnHeaderSub" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px" onclick="event.stopPropagation()">
+        <span style="font-size:10px;color:var(--dim)">Update weekly · affects scoring</span>
+        <span class="earn-chevron" id="earnChevron">▾</span>
+      </div>
+    </div>
+    <div class="earn-panel-body" id="earnPanelBody">
+      <div id="earnTableWrap"></div>
     </div>
   </div>
 
@@ -716,6 +763,7 @@ window.addEventListener('DOMContentLoaded', () => {
   loadKeys();
   loadWatchlists();
   initPositionTracker();
+  initEarningsPanel();
   detectProxy();
   // Load saved market context — with staleness check
   try {
@@ -2439,7 +2487,7 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     const volStr  = (s.volAccumScore != null && s.volAccumScore !== 0)
       ? ` volAccum=${s.volAccumScore > 0 ? '+' : ''}${s.volAccumScore}`
       : '';
-    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}`;
+    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${earningsPromptStr(s.ticker)}`;
 
     // ── Per-stock news block ──────────────────────────────────────────────────
     // Inject up to 3 recent Polygon headlines directly below each stock's data.
@@ -2618,6 +2666,16 @@ async function runAnalysis() {
       s,
       pa: preAnalyse(s, holdPeriod, minRRnum)
     })).filter(({ pa }) => pa !== null);
+
+    // P2B: Apply earnings penalty — mutates pa.scores.overall and pa.verdict in place
+    const earningsMap = new Map(); // ticker → earningsInfo
+    preScored.forEach(({ s, pa }) => {
+      const info = applyEarningsPenalty(s.ticker, pa);
+      if (info) {
+        earningsMap.set(s.ticker, info);
+        dbg(`📅 Earnings risk: ${s.ticker} reports ${info.label} (${info.days}d) — score −${info.penalty}${info.severity === 'imminent' ? ', verdict → watch' : ''}`, 'info');
+      }
+    });
 
     // ── ADR deduplication — drop lower-value ADR when both legs qualify ────────
     // ASMIY is the US ADR for ASML (same underlying). When both score ≥80,
@@ -3476,7 +3534,7 @@ function renderResults(results) {
         <div class="a-left">
           <div class="a-ticker">${r.ticker}</div>
           <div class="a-name">${r.companyName||''}</div>
-          <div style="font-size:12px;margin-top:4px">${priceDisplay}</div>
+          <div style="font-size:12px;margin-top:4px">${priceDisplay}${earningsBadgeHtml(r.ticker)}</div>
         </div>
         <div class="a-prices">
           <div class="a-price-cell"><div class="a-price-label">Entry</div><div class="a-price-val pv-entry">$${fmt(r.entryPrice)}</div></div>
@@ -4166,6 +4224,243 @@ function initPositionTracker() {
   if (POLY_KEY && _positions.length > 0) {
     setTimeout(refreshPositions, 800);
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P2B EARNINGS CALENDAR
+// Static lookup table — update weekly. Affects pre-score penalty and verdict.
+// Format: 'TICKER': 'YYYY-MM-DD'  (expected report date, before market open)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const EARNINGS_CALENDAR = {
+  // ── June / July 2026 earnings — update weekly ──────────────────────────────
+  // Semiconductors & Equipment
+  'AVGO':  '2026-06-12',  // Broadcom — reports after close
+  'ADBE':  '2026-06-18',
+  'ORCL':  '2026-06-24',
+  'MU':    '2026-06-25',
+  'NKE':   '2026-06-26',
+  'LEVI':  '2026-07-08',
+  'TSM':   '2026-07-17',
+  'ASML':  '2026-07-16',
+  'ASMIY': '2026-07-16',
+  'LRCX':  '2026-07-23',
+  'KLAC':  '2026-07-29',
+  'AMAT':  '2026-08-14',
+  // AI & Cloud
+  'MSFT':  '2026-07-29',
+  'META':  '2026-07-29',
+  'GOOGL': '2026-07-28',
+  'AMZN':  '2026-07-30',
+  'NVDA':  '2026-08-26',
+  'AMD':   '2026-07-28',
+  'ARM':   '2026-07-30',
+  'PLTR':  '2026-08-04',
+  'NOW':   '2026-07-23',
+  'CRM':   '2026-08-27',
+  // Networking
+  'CRDO':  '2026-08-18',
+  'ANET':  '2026-07-29',
+  'CSCO':  '2026-08-13',
+  // Analog / Mixed-signal
+  'TXN':   '2026-07-22',
+  'ADI':   '2026-08-19',
+  'MCHP':  '2026-08-06',
+  'ON':    '2026-07-28',
+  'NXPI':  '2026-07-28',
+  // Memory
+  'SNDK':  '2026-07-23',
+  'WDC':   '2026-07-30',
+  'STX':   '2026-07-22',
+  // Security
+  'CRWD':  '2026-08-27',
+  'PANW':  '2026-08-19',
+  // Power / Data Center
+  'VRT':   '2026-07-23',
+  'ETN':   '2026-07-28',
+  'GEV':   '2026-07-23',
+  // EDA
+  'CDNS':  '2026-07-28',
+  'SNPS':  '2026-08-20',
+  // Other qualifiers
+  'MTRN':  '2026-08-05',
+  'ICHR':  '2026-07-29',
+  'VECO':  '2026-08-06',
+  'ARW':   '2026-08-07',
+  'COIN':  '2026-07-30',
+  'TSLA':  '2026-07-22',
+  'ISRG':  '2026-07-23',
+};
+
+// ── Earnings risk scoring constants ───────────────────────────────────────────
+const EARN_IMMINENT_DAYS = 3;  // ≤3 days → force watch, score −15
+const EARN_SOON_DAYS     = 7;  // ≤7 days → score −8, warn in prompt
+const EARN_WATCH_DAYS    = 14; // ≤14 days → show in panel, minor caution
+
+// ── Core lookup: returns days until earnings (null if not in calendar) ────────
+function daysUntilEarnings(ticker) {
+  const dateStr = EARNINGS_CALENDAR[ticker];
+  if (!dateStr) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const earn = new Date(dateStr + 'T00:00:00');
+  const diff = Math.round((earn - today) / (1000 * 60 * 60 * 24));
+  return diff; // negative = already reported
+}
+
+// ── Apply earnings adjustments to a pre-scored stock ──────────────────────────
+// Called after preAnalyse(). Mutates pa in place, returns earningsInfo object.
+function applyEarningsPenalty(ticker, pa) {
+  const days = daysUntilEarnings(ticker);
+  if (days === null || days < 0 || days > EARN_SOON_DAYS) return null; // no near-term risk
+
+  const dateStr = EARNINGS_CALENDAR[ticker];
+  const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  let penalty = 0;
+  let severity = 'soon'; // 'imminent' | 'soon'
+
+  if (days <= EARN_IMMINENT_DAYS) {
+    penalty = 15;
+    severity = 'imminent';
+    // Hard override: cap verdict at watch regardless of score
+    if (pa.verdict === 'buy') pa.verdict = 'watch';
+  } else {
+    penalty = 8;
+    severity = 'soon';
+  }
+
+  // Apply score penalty (floor at 0)
+  pa.scores.overall = Math.max(0, pa.scores.overall - penalty);
+
+  return { days, label, severity, penalty, dateStr };
+}
+
+// ── Panel toggle ──────────────────────────────────────────────────────────────
+let _earnPanelOpen = true;
+
+function toggleEarnPanel() {
+  _earnPanelOpen = !_earnPanelOpen;
+  const body = document.getElementById('earnPanelBody');
+  const chev = document.getElementById('earnChevron');
+  if (!body) return;
+  if (_earnPanelOpen) {
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.classList.remove('collapsed');
+    if (chev) chev.textContent = '▾';
+  } else {
+    body.style.maxHeight = body.scrollHeight + 'px';
+    requestAnimationFrame(() => {
+      body.style.maxHeight = '0';
+      body.classList.add('collapsed');
+      if (chev) chev.textContent = '▸';
+    });
+  }
+}
+
+// ── Render earnings panel ─────────────────────────────────────────────────────
+function renderEarningsPanel() {
+  const wrap = document.getElementById('earnTableWrap');
+  const sub  = document.getElementById('earnHeaderSub');
+  if (!wrap) return;
+
+  // Find all stocks with earnings in next EARN_WATCH_DAYS days
+  const upcoming = Object.entries(EARNINGS_CALENDAR)
+    .map(([ticker, dateStr]) => {
+      const days = daysUntilEarnings(ticker);
+      return { ticker, dateStr, days };
+    })
+    .filter(x => x.days !== null && x.days >= 0 && x.days <= EARN_WATCH_DAYS)
+    .sort((a, b) => a.days - b.days);
+
+  if (sub) sub.textContent = upcoming.length > 0 ? `${upcoming.length} in next ${EARN_WATCH_DAYS}d` : '';
+
+  if (upcoming.length === 0) {
+    wrap.innerHTML = `<div class="earn-empty">No earnings in the next ${EARN_WATCH_DAYS} days for tracked universe.</div>`;
+    const body = document.getElementById('earnPanelBody');
+    if (body && _earnPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+    return;
+  }
+
+  const rows = upcoming.map(({ ticker, dateStr, days }) => {
+    const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    let daysClass, badgeClass, badgeLabel, impact;
+
+    if (days <= EARN_IMMINENT_DAYS) {
+      daysClass  = 'earn-days-imminent';
+      badgeClass = 'earn-badge-imminent';
+      badgeLabel = '⚠ Imminent';
+      impact     = `−15 pts · forced watch`;
+    } else if (days <= EARN_SOON_DAYS) {
+      daysClass  = 'earn-days-soon';
+      badgeClass = 'earn-badge-soon';
+      badgeLabel = 'Soon';
+      impact     = `−8 pts`;
+    } else {
+      daysClass  = 'earn-days-ok';
+      badgeClass = 'earn-badge-watch';
+      badgeLabel = 'Upcoming';
+      impact     = `watch`;
+    }
+
+    const daysLabel = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `${days}d`;
+
+    return `<tr>
+      <td><div class="earn-ticker">${ticker}</div></td>
+      <td><div style="font-size:12px">${label}</div></td>
+      <td class="td-r"><span class="${daysClass}">${daysLabel}</span></td>
+      <td><span class="earn-badge ${badgeClass}">${badgeLabel}</span></td>
+      <td class="td-r"><span style="font-size:10px;color:var(--dim);font-family:var(--mono)">${impact}</span></td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="earn-table">
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Reports</th>
+          <th class="th-r">In</th>
+          <th>Risk</th>
+          <th class="th-r">Score Impact</th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  const body = document.getElementById('earnPanelBody');
+  if (body && _earnPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+// ── Init earnings panel on load ───────────────────────────────────────────────
+function initEarningsPanel() {
+  renderEarningsPanel();
+  const body = document.getElementById('earnPanelBody');
+  if (body) body.style.maxHeight = body.scrollHeight + 'px';
+}
+
+// ── Earnings badge HTML for result cards ──────────────────────────────────────
+function earningsBadgeHtml(ticker) {
+  const days = daysUntilEarnings(ticker);
+  if (days === null || days < 0 || days > EARN_WATCH_DAYS) return '';
+  const dateStr = EARNINGS_CALENDAR[ticker];
+  const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const isImminent = days <= EARN_IMMINENT_DAYS;
+  const cls = isImminent ? 'earn-warning earn-warning-imminent' : 'earn-warning';
+  const daysLabel = days === 0 ? 'today' : days === 1 ? 'tomorrow' : `${days}d`;
+  return `<span class="${cls}">📅 Earnings ${label} (${daysLabel})</span>`;
+}
+
+// ── Earnings string for Claude prompt ─────────────────────────────────────────
+function earningsPromptStr(ticker) {
+  const days = daysUntilEarnings(ticker);
+  if (days === null || days < 0 || days > EARN_SOON_DAYS) return '';
+  const dateStr = EARNINGS_CALENDAR[ticker];
+  const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (days <= EARN_IMMINENT_DAYS) {
+    return ` ⚠EARNINGS_IN_${days}D(${label})_FORCED_WATCH`;
+  }
+  return ` EARNINGS_IN_${days}D(${label})_CAUTION`;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
