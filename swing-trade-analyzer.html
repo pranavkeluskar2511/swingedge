@@ -2274,12 +2274,12 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     : '';
 
   const contextInstruction = contextToInject
-    ? `entryNote: entry trigger with price — reference stock-specific news or macro context if relevant (max 12 words)`
-    : `entryNote: specific entry trigger with price — reference news if relevant (max 12 words)`;
+    ? `entryNote: entry trigger with price — reconcile news AND price action (gap direction matters); if news is positive but stock gapped down, note the tension; max 12 words`
+    : `entryNote: specific entry trigger with price — reference news if relevant, reconcile with gap direction; max 12 words`;
 
   return `Swing trade analyst. Write 3 trade sentences per stock. Hold=${holdLabel} Regime=${regime}
 ${contextToInject ? '\n' + contextToInject + '\n' : ''}
-Each stock's data line is followed by its own RECENT NEWS. Use the news to write specific trade sentences — if news explains why a stock moved, reference it. If no news, use technicals only.
+Each stock's data line is followed by its own RECENT NEWS. Use news to write specific sentences — but ALWAYS reconcile news with the actual gap direction in the data. A negative gap with positive news = tension/wait signal. A negative gap with negative news = avoid/caution signal. A positive gap with positive news = momentum confirmation. Do not call a stock "popped" if its gap is negative.
 
 ${stockLines}
 
