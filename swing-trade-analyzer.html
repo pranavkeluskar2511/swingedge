@@ -2620,10 +2620,22 @@ async function runAnalysis() {
     })).filter(({ pa }) => pa !== null);
 
     // Split into Claude-worthy vs JS-only
-    const forClaude  = preScored.filter(({ pa }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD);
-    const jsOnly     = preScored.filter(({ pa }) => pa.scores.overall <  CLAUDE_SCORE_THRESHOLD);
+    const MAX_CLAUDE_QUALIFIERS = 12; // cost cap — selloff days can push 14+ stocks through
+    const allQualified = preScored
+      .filter(({ pa }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD)
+      .sort((a, b) => b.pa.scores.overall - a.pa.scores.overall); // highest score first
 
-    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}) | ${jsOnly.length} stocks → JS-only`, 'ok');
+    const forClaude = allQualified.slice(0, MAX_CLAUDE_QUALIFIERS);
+    const cappedOut = allQualified.slice(MAX_CLAUDE_QUALIFIERS); // qualified but capped → JS-only
+    const jsOnly    = [
+      ...preScored.filter(({ pa }) => pa.scores.overall < CLAUDE_SCORE_THRESHOLD),
+      ...cappedOut,
+    ];
+
+    if (cappedOut.length > 0) {
+      dbg(`⚠ Qualifier cap: ${allQualified.length} stocks scored ≥${CLAUDE_SCORE_THRESHOLD} — capped at ${MAX_CLAUDE_QUALIFIERS}. Dropped to JS-only: ${cappedOut.map(x => x.s.ticker).join(', ')}`, 'info');
+    }
+    dbg(`Pre-score filter: ${forClaude.length} stocks → Claude (score ≥${CLAUDE_SCORE_THRESHOLD}${cappedOut.length > 0 ? `, top ${MAX_CLAUDE_QUALIFIERS} by score` : ''}) | ${jsOnly.length} stocks → JS-only`, 'ok');
 
     // ── Fix 1: Log volAccumScore + intradayFade for qualifying stocks ─────────
     // These two Phase 1 fields are silent — no log output previously.
