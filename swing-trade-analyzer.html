@@ -274,6 +274,79 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .tag-live{background:rgba(13,158,122,.12);color:#0a7a5c;border:1px solid rgba(13,158,122,.25)}
 
 @media(max-width:750px){.a-body{grid-template-columns:1fr}.a-card-header{grid-template-columns:1fr;gap:10px}.a-prices{flex-wrap:wrap}.keys-row,.params-row{flex-direction:column}}
+
+/* ── P2A Position Tracker ────────────────────────────────────────────────── */
+.pos-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.pos-panel-header{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;background:var(--surface2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none;transition:background .12s}
+.pos-panel-header:hover{background:var(--bg)}
+.pos-header-left{display:flex;align-items:center;gap:8px}
+.pos-header-title{font-family:var(--display);font-size:12px;font-weight:700;letter-spacing:.03em}
+.pos-badge-alert{background:rgba(217,48,85,.15);color:var(--bear);border:1px solid rgba(217,48,85,.3);border-radius:10px;font-size:9px;font-weight:700;padding:1px 7px;letter-spacing:.05em;display:none}
+.pos-header-right{display:flex;align-items:center;gap:8px}
+.pos-refresh-btn{display:flex;align-items:center;gap:4px;font-size:10px;color:var(--muted);background:var(--surface);border:1px solid var(--border2);border-radius:4px;padding:2px 8px;cursor:pointer;font-family:var(--mono);transition:all .15s}
+.pos-refresh-btn:hover{color:var(--accent);border-color:var(--accent)}
+.pos-add-btn{font-size:10px;color:var(--accent);background:rgba(13,158,122,.08);border:1px solid rgba(13,158,122,.25);border-radius:4px;padding:2px 9px;cursor:pointer;font-family:var(--mono);font-weight:600;transition:all .15s}
+.pos-add-btn:hover{background:rgba(13,158,122,.15)}
+.pos-chevron{font-size:10px;color:var(--dim);transition:transform .2s}
+.pos-panel-body{overflow:hidden;transition:max-height .3s cubic-bezier(.4,0,.2,1)}
+.pos-panel-body.collapsed{max-height:0!important}
+
+/* Empty state */
+.pos-empty{padding:16px 18px;font-size:11px;color:var(--dim);font-style:italic}
+
+/* Add form */
+.pos-form{display:none;padding:12px 18px;border-bottom:1px solid var(--border);background:rgba(13,158,122,.03)}
+.pos-form.open{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.pos-form-group{display:flex;flex-direction:column;gap:4px}
+.pos-form-group label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.pos-form-group input{background:var(--bg);border:1px solid var(--border2);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:12px;padding:5px 8px;outline:none;transition:border-color .2s;width:100%}
+.pos-form-group input:focus{border-color:var(--accent)}
+.pos-form-group input::placeholder{color:var(--dim)}
+.pos-form-ticker{width:80px}
+.pos-form-price{width:90px}
+.pos-form-date{width:110px}
+.pos-form-notes{width:160px}
+.pos-form-save{background:var(--accent);color:#fff;border:none;border-radius:5px;font-family:var(--display);font-size:11px;font-weight:700;padding:6px 14px;cursor:pointer;white-space:nowrap;align-self:flex-end;transition:background .15s}
+.pos-form-save:hover{background:#0bb88e}
+.pos-form-cancel{background:none;border:1px solid var(--border2);border-radius:5px;font-family:var(--mono);font-size:11px;color:var(--muted);padding:5px 10px;cursor:pointer;align-self:flex-end;transition:all .15s}
+.pos-form-cancel:hover{border-color:var(--bear);color:var(--bear)}
+
+/* Position rows table */
+.pos-table{width:100%;border-collapse:collapse}
+.pos-table thead th{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);padding:7px 14px;border-bottom:1px solid var(--border);text-align:left;background:var(--surface);font-weight:500;white-space:nowrap}
+.pos-table thead th.th-r{text-align:right}
+.pos-table tbody tr{border-bottom:1px solid var(--border);transition:background .12s}
+.pos-table tbody tr:last-child{border-bottom:none}
+.pos-table tbody tr:hover{background:var(--surface2)}
+.pos-table td{padding:9px 14px;vertical-align:middle;font-size:12px}
+.pos-table td.td-r{text-align:right}
+.pos-ticker-cell{font-family:var(--display);font-size:14px;font-weight:800;letter-spacing:-.2px}
+.pos-notes{font-size:10px;color:var(--dim);margin-top:2px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pos-days{font-size:10px;color:var(--muted)}
+
+/* P&L coloring */
+.pos-pnl-pos{color:var(--bull);font-weight:600}
+.pos-pnl-neg{color:var(--bear);font-weight:600}
+.pos-pnl-flat{color:var(--muted)}
+
+/* Status badges */
+.pos-status{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:3px;white-space:nowrap;text-transform:uppercase}
+.pos-status-hold{background:rgba(13,158,122,.1);color:#0a7a5c;border:1px solid rgba(13,158,122,.25)}
+.pos-status-near{background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.25)}
+.pos-status-breach{background:rgba(217,48,85,.12);color:#b0253f;border:1px solid rgba(217,48,85,.3);animation:breach-pulse 1.5s ease-in-out infinite}
+.pos-status-target{background:rgba(26,111,204,.1);color:#1a5cb0;border:1px solid rgba(26,111,204,.25)}
+@keyframes breach-pulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+/* Stop distance bar */
+.stop-dist-wrap{display:flex;align-items:center;gap:6px}
+.stop-dist-bar{width:48px;height:3px;background:var(--border2);border-radius:2px;overflow:hidden;flex-shrink:0}
+.stop-dist-fill{height:100%;border-radius:2px;transition:width .5s}
+
+/* Remove / edit */
+.pos-act-btn{background:none;border:none;cursor:pointer;font-size:11px;color:var(--dim);padding:2px 4px;border-radius:3px;transition:color .15s;font-family:var(--mono)}
+.pos-act-btn:hover{color:var(--bear)}
+.pos-act-edit:hover{color:var(--accent2)!important}
+.pos-loading{padding:12px 18px;font-size:11px;color:var(--dim);font-style:italic}
 </style>
 </head>
 <body>
@@ -289,6 +362,60 @@ canvas.spark-inline{display:block;width:120px;height:40px}
       <div style="margin-top:3px" id="lastUpdated">Enter API keys to begin</div>
     </div>
   </header>
+
+  <!-- P2A Position Tracker Panel -->
+  <div class="pos-panel" id="posTrackerPanel">
+    <div class="pos-panel-header" onclick="togglePosPanel()">
+      <div class="pos-header-left">
+        <span style="font-size:14px">📍</span>
+        <span class="pos-header-title">Open Positions</span>
+        <span class="pos-badge-alert" id="posBadgeAlert">⚠ STOP BREACHED</span>
+        <span id="posHeaderCount" style="font-size:10px;color:var(--muted)"></span>
+      </div>
+      <div class="pos-header-right" onclick="event.stopPropagation()">
+        <button class="pos-refresh-btn" id="posRefreshBtn" onclick="refreshPositions()" title="Refresh live prices">
+          <svg id="posRefreshIcon" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+          Refresh
+        </button>
+        <button class="pos-add-btn" onclick="openPosForm()">＋ Add Position</button>
+        <span class="pos-chevron" id="posChevron">▾</span>
+      </div>
+    </div>
+    <div class="pos-panel-body" id="posPanelBody">
+      <!-- Add form (hidden by default) -->
+      <div class="pos-form" id="posForm">
+        <div class="pos-form-group">
+          <label>Ticker</label>
+          <input id="pfTicker" class="pos-form-ticker" placeholder="NVDA" maxlength="6" style="text-transform:uppercase">
+        </div>
+        <div class="pos-form-group">
+          <label>Entry $</label>
+          <input id="pfEntry" class="pos-form-price" placeholder="0.00" type="number" step="0.01" min="0">
+        </div>
+        <div class="pos-form-group">
+          <label>Stop $</label>
+          <input id="pfStop" class="pos-form-price" placeholder="0.00" type="number" step="0.01" min="0">
+        </div>
+        <div class="pos-form-group">
+          <label>Target $ <span style="font-weight:400;opacity:.6">(opt)</span></label>
+          <input id="pfTarget" class="pos-form-price" placeholder="0.00" type="number" step="0.01" min="0">
+        </div>
+        <div class="pos-form-group">
+          <label>Entry date</label>
+          <input id="pfDate" class="pos-form-date" type="date">
+        </div>
+        <div class="pos-form-group">
+          <label>Notes <span style="font-weight:400;opacity:.6">(opt)</span></label>
+          <input id="pfNotes" class="pos-form-notes" placeholder="e.g. breakout from flat base">
+        </div>
+        <input type="hidden" id="pfEditIdx" value="">
+        <button class="pos-form-save" onclick="savePosition()">Save</button>
+        <button class="pos-form-cancel" onclick="closePosForm()">Cancel</button>
+      </div>
+      <!-- Position rows rendered here -->
+      <div id="posTableWrap"></div>
+    </div>
+  </div>
 
   <!-- Market Context Panel -->
   <div class="keys-panel" style="margin-bottom:16px">
@@ -588,6 +715,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
   loadKeys();
   loadWatchlists();
+  initPositionTracker();
   detectProxy();
   // Load saved market context
   try {
@@ -2427,6 +2555,9 @@ async function runAnalysis() {
     const CLAUDE_SCORE_THRESHOLD = 80; // only send to Claude if score meets this
     const minRRnum = parseFloat(minRR);
 
+    // P2A: Inject live prices from this run into position tracker (free — data already fetched)
+    injectRunPricesIntoPositions(stockData);
+
     const preScored = stockData.map(s => ({
       s,
       pa: preAnalyse(s, holdPeriod, minRRnum)
@@ -3614,6 +3745,330 @@ function drawSpark(id, closes, verdict) {
   ctx.arc(lp.x, lp.y, 2.5, 0, Math.PI*2);
   ctx.fillStyle = color;
   ctx.fill();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P2A POSITION TRACKER
+// Stores open positions in localStorage. Refreshes live prices via Polygon
+// snapshot on load + after every analysis run. No Claude API calls.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const POS_KEY = 'swingedge_positions';
+let _positions = [];       // in-memory array
+let _posPanelOpen = true;  // collapse state
+let _posLivePrices = {};   // ticker → { price, changePct }
+
+// ── Persist / load ────────────────────────────────────────────────────────────
+function savePosData() {
+  try { localStorage.setItem(POS_KEY, JSON.stringify(_positions)); } catch(e) {}
+}
+
+function loadPosData() {
+  try {
+    const raw = localStorage.getItem(POS_KEY);
+    if (raw) _positions = JSON.parse(raw);
+  } catch(e) { _positions = []; }
+}
+
+// ── Panel collapse toggle ─────────────────────────────────────────────────────
+function togglePosPanel() {
+  _posPanelOpen = !_posPanelOpen;
+  const body = document.getElementById('posPanelBody');
+  const chev = document.getElementById('posChevron');
+  if (body) {
+    if (_posPanelOpen) {
+      body.style.maxHeight = body.scrollHeight + 'px';
+      body.classList.remove('collapsed');
+      if (chev) chev.textContent = '▾';
+    } else {
+      body.style.maxHeight = body.scrollHeight + 'px';
+      requestAnimationFrame(() => {
+        body.style.maxHeight = '0';
+        body.classList.add('collapsed');
+        if (chev) chev.textContent = '▸';
+      });
+    }
+  }
+}
+
+// Open panel if collapsed
+function ensurePosOpen() {
+  if (!_posPanelOpen) togglePosPanel();
+}
+
+// ── Add / Edit form ───────────────────────────────────────────────────────────
+function openPosForm(editIdx) {
+  ensurePosOpen();
+  const form = document.getElementById('posForm');
+  if (!form) return;
+  form.classList.add('open');
+
+  // Pre-fill today's date
+  const today = new Date();
+  const yyyy = today.getFullYear();
+  const mm = String(today.getMonth()+1).padStart(2,'0');
+  const dd = String(today.getDate()).padStart(2,'0');
+  const todayStr = `${yyyy}-${mm}-${dd}`;
+
+  if (editIdx != null && _positions[editIdx]) {
+    const p = _positions[editIdx];
+    document.getElementById('pfTicker').value  = p.ticker;
+    document.getElementById('pfEntry').value   = p.entry;
+    document.getElementById('pfStop').value    = p.stop;
+    document.getElementById('pfTarget').value  = p.target || '';
+    document.getElementById('pfDate').value    = p.date   || todayStr;
+    document.getElementById('pfNotes').value   = p.notes  || '';
+    document.getElementById('pfEditIdx').value = editIdx;
+  } else {
+    document.getElementById('pfTicker').value  = '';
+    document.getElementById('pfEntry').value   = '';
+    document.getElementById('pfStop').value    = '';
+    document.getElementById('pfTarget').value  = '';
+    document.getElementById('pfDate').value    = todayStr;
+    document.getElementById('pfNotes').value   = '';
+    document.getElementById('pfEditIdx').value = '';
+    setTimeout(() => document.getElementById('pfTicker').focus(), 50);
+  }
+
+  // Re-measure height so panel expands correctly
+  const body = document.getElementById('posPanelBody');
+  if (body) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+function closePosForm() {
+  const form = document.getElementById('posForm');
+  if (form) form.classList.remove('open');
+  // Re-measure
+  const body = document.getElementById('posPanelBody');
+  if (body) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+function savePosition() {
+  const ticker = (document.getElementById('pfTicker').value || '').trim().toUpperCase().replace(/[^A-Z]/g,'');
+  const entry  = parseFloat(document.getElementById('pfEntry').value);
+  const stop   = parseFloat(document.getElementById('pfStop').value);
+  const target = parseFloat(document.getElementById('pfTarget').value) || null;
+  const date   = document.getElementById('pfDate').value || '';
+  const notes  = (document.getElementById('pfNotes').value || '').trim();
+  const editIdx = document.getElementById('pfEditIdx').value;
+
+  if (!ticker || !ticker.length) { alert('Enter a ticker.'); return; }
+  if (!entry  || isNaN(entry))   { alert('Enter a valid entry price.'); return; }
+  if (!stop   || isNaN(stop))    { alert('Enter a valid stop price.'); return; }
+  if (stop >= entry) { alert('Stop price must be below entry price.'); return; }
+
+  const pos = { ticker, entry, stop, target, date, notes };
+
+  if (editIdx !== '') {
+    _positions[parseInt(editIdx)] = pos;
+  } else {
+    _positions.push(pos);
+  }
+
+  savePosData();
+  closePosForm();
+  renderPositions();
+  // Fetch live price for the new/edited ticker
+  fetchSinglePosPrice(ticker);
+}
+
+function removePosition(idx) {
+  if (!confirm(`Remove ${_positions[idx]?.ticker} position?`)) return;
+  _positions.splice(idx, 1);
+  savePosData();
+  renderPositions();
+}
+
+// ── Live price fetch ──────────────────────────────────────────────────────────
+// Uses Polygon snapshot endpoint — same as main analysis, free, fast.
+async function fetchSinglePosPrice(ticker) {
+  if (!POLY_KEY) return;
+  try {
+    const data = await polyGet(`/v2/snapshot/locale/us/markets/stocks/tickers/${ticker}`);
+    const snap = data?.ticker;
+    if (!snap) return;
+    const price     = snap.lastTrade?.p || snap.lastQuote?.P || snap.day?.c || null;
+    const prevClose = snap.prevDay?.c || null;
+    const changePct = (price && prevClose) ? ((price - prevClose) / prevClose * 100) : null;
+    _posLivePrices[ticker] = { price, changePct };
+    renderPositions();
+  } catch(e) {
+    // Non-fatal — position still renders with entry price
+  }
+}
+
+async function refreshPositions() {
+  if (!POLY_KEY || _positions.length === 0) return;
+  const btn = document.getElementById('posRefreshBtn');
+  if (btn) { btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; }
+
+  const tickers = [...new Set(_positions.map(p => p.ticker))];
+  await Promise.all(tickers.map(t => fetchSinglePosPrice(t)));
+
+  if (btn) { btn.style.opacity = '1'; btn.style.pointerEvents = ''; }
+}
+
+// Called after main analysis run completes — inject prices from already-fetched stockData
+function injectRunPricesIntoPositions(stockData) {
+  if (!stockData || !_positions.length) return;
+  stockData.forEach(s => {
+    if (s.price) {
+      _posLivePrices[s.ticker] = {
+        price: s.price,
+        changePct: s.changePct != null ? s.changePct : null
+      };
+    }
+  });
+  renderPositions();
+}
+
+// ── Compute days held ─────────────────────────────────────────────────────────
+function daysSince(dateStr) {
+  if (!dateStr) return null;
+  const entry = new Date(dateStr);
+  const now   = new Date();
+  const diff  = Math.floor((now - entry) / (1000 * 60 * 60 * 24));
+  return diff >= 0 ? diff : null;
+}
+
+// ── Render ─────────────────────────────────────────────────────────────────────
+function renderPositions() {
+  const wrap = document.getElementById('posTableWrap');
+  if (!wrap) return;
+
+  if (_positions.length === 0) {
+    wrap.innerHTML = `<div class="pos-empty">No open positions. Click <strong>＋ Add Position</strong> to track a trade.</div>`;
+    document.getElementById('posHeaderCount').textContent = '';
+    document.getElementById('posBadgeAlert').style.display = 'none';
+    const body = document.getElementById('posPanelBody');
+    if (body && _posPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+    return;
+  }
+
+  // Check for any breached stops
+  let anyBreach = false;
+
+  const rows = _positions.map((p, idx) => {
+    const live = _posLivePrices[p.ticker];
+    const price = live?.price || null;
+    const changePct = live?.changePct;
+
+    // P&L
+    const pnlPct = price ? ((price - p.entry) / p.entry * 100) : null;
+
+    // Distance to stop (as % of current price)
+    const stopDistPct = price ? ((price - p.stop) / price * 100) : null;
+    const entryToStop = ((p.entry - p.stop) / p.entry * 100);
+
+    // Status
+    let status = 'hold', statusLabel = 'Hold';
+    if (price) {
+      if (price <= p.stop) {
+        status = 'breach'; statusLabel = '❌ Stop Breached';
+        anyBreach = true;
+      } else if (p.target && price >= p.target) {
+        status = 'target'; statusLabel = '🎯 Target Hit';
+      } else if (stopDistPct !== null && stopDistPct <= 3) {
+        status = 'near'; statusLabel = '⚠ Near Stop';
+      }
+    }
+
+    // Days held
+    const days = daysSince(p.date);
+
+    // Stop bar fill: how close to stop (0% = at entry, 100% = at stop)
+    // Fill represents how much of the original stop-risk has been consumed
+    let barFill = 0, barColor = 'var(--bull)';
+    if (price && price > p.stop) {
+      const consumed = (p.entry - price) / (p.entry - p.stop); // negative means above entry
+      barFill = Math.max(0, Math.min(100, consumed * 100));
+      barColor = barFill > 75 ? 'var(--bear)' : barFill > 40 ? 'var(--warn)' : 'var(--bull)';
+    } else if (price && price <= p.stop) {
+      barFill = 100; barColor = 'var(--bear)';
+    }
+
+    // Format values
+    const priceStr   = price  ? `$${price.toFixed(2)}` : '—';
+    const pnlStr     = pnlPct != null ? `${pnlPct > 0 ? '+' : ''}${pnlPct.toFixed(1)}%` : '—';
+    const pnlClass   = pnlPct == null ? 'pos-pnl-flat' : pnlPct > 0 ? 'pos-pnl-pos' : pnlPct < 0 ? 'pos-pnl-neg' : 'pos-pnl-flat';
+    const chgStr     = changePct != null ? `${changePct > 0 ? '+' : ''}${changePct.toFixed(1)}% today` : '';
+    const daysStr    = days != null ? `${days}d held` : '';
+    const stopDistStr = stopDistPct != null && price > p.stop ? `${stopDistPct.toFixed(1)}% to stop` : '';
+    const targetStr  = p.target ? `$${p.target.toFixed(2)}` : '—';
+
+    return `
+    <tr>
+      <td>
+        <div class="pos-ticker-cell">${p.ticker}</div>
+        ${p.notes ? `<div class="pos-notes" title="${p.notes}">${p.notes}</div>` : ''}
+        ${daysStr ? `<div class="pos-days">${daysStr}</div>` : ''}
+      </td>
+      <td class="td-r">
+        <div style="font-family:var(--display);font-size:13px;font-weight:700">${priceStr}</div>
+        ${chgStr ? `<div style="font-size:10px;color:${changePct >= 0 ? 'var(--bull)' : 'var(--bear)'}">${chgStr}</div>` : ''}
+      </td>
+      <td class="td-r"><div style="font-size:12px">$${p.entry.toFixed(2)}</div></td>
+      <td class="td-r">
+        <div class="${pnlClass}" style="font-family:var(--display);font-size:13px">${pnlStr}</div>
+      </td>
+      <td class="td-r">
+        <div style="font-size:12px">$${p.stop.toFixed(2)}</div>
+        <div class="stop-dist-wrap" style="justify-content:flex-end;margin-top:4px">
+          ${stopDistStr ? `<div style="font-size:9px;color:var(--dim)">${stopDistStr}</div>` : ''}
+          <div class="stop-dist-bar"><div class="stop-dist-fill" style="width:${barFill}%;background:${barColor}"></div></div>
+        </div>
+      </td>
+      <td class="td-r"><div style="font-size:12px;color:var(--muted)">${targetStr}</div></td>
+      <td>
+        <span class="pos-status pos-status-${status}">${statusLabel}</span>
+      </td>
+      <td style="white-space:nowrap">
+        <button class="pos-act-btn pos-act-edit" onclick="openPosForm(${idx})" title="Edit">✎</button>
+        <button class="pos-act-btn" onclick="removePosition(${idx})" title="Remove">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  wrap.innerHTML = `
+    <table class="pos-table">
+      <thead>
+        <tr>
+          <th>Position</th>
+          <th class="th-r">Live Price</th>
+          <th class="th-r">Entry</th>
+          <th class="th-r">P&amp;L</th>
+          <th class="th-r">Stop</th>
+          <th class="th-r">Target</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  // Header count + breach badge
+  const countEl = document.getElementById('posHeaderCount');
+  if (countEl) countEl.textContent = `${_positions.length} position${_positions.length !== 1 ? 's' : ''}`;
+
+  const badgeEl = document.getElementById('posBadgeAlert');
+  if (badgeEl) badgeEl.style.display = anyBreach ? 'inline-block' : 'none';
+
+  // Re-measure panel height
+  const body = document.getElementById('posPanelBody');
+  if (body && _posPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+// ── Init (called from DOMContentLoaded) ───────────────────────────────────────
+function initPositionTracker() {
+  loadPosData();
+  renderPositions();
+  // Set panel body height for open state
+  const body = document.getElementById('posPanelBody');
+  if (body) body.style.maxHeight = body.scrollHeight + 'px';
+  // Auto-refresh prices if keys are already loaded
+  if (POLY_KEY && _positions.length > 0) {
+    setTimeout(refreshPositions, 800);
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
