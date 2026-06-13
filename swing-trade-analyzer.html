@@ -2294,14 +2294,25 @@ function preAnalyse(s, holdPeriod, minRR) {
     else if (s.volAccumScore <= -2) l2 -= 12; // strong distribution — exit pressure
     else if (s.volAccumScore <= -1) l2 -= 6;  // mild distribution
   }
-  // Intraday fade penalty — gap up then sold off = distribution signal (NEW)
-  // Only apply during regular session when intradayFade is available
-  if (s.intradayFade != null && s.gapPct != null && s.gapPct >= 1) {
-    // Only penalise fade on gap-up days — a gap-down day fading further is different
-    if      (s.intradayFade >= 0.8) l2 -= 20; // gave back ≥80% of gap-up — severe distribution
-    else if (s.intradayFade >= 0.6) l2 -= 12; // gave back 60-80% — clear fade
-    else if (s.intradayFade >= 0.4) l2 -= 6;  // gave back 40-60% — mild fade
-    // intradayFade < 0.4 means held most of the gap — no penalty, constructive
+  // Intraday fade penalty — distribution signal: price gave back intraday gains
+  // Applied to ALL sessions (not just gap-up days) — fade=200% on a flat open
+  // is equally bearish, often more so (no initial buying conviction).
+  // intradayFade: 0=held all gains, 1=gave it all back, 2=closed below open
+  if (s.intradayFade != null) {
+    if (s.gapPct != null && s.gapPct >= 1.0) {
+      // Gap-up day — penalise fade relative to how much of the gap was given back
+      if      (s.intradayFade >= 1.5) l2 -= 30; // closed below open on gap-up — severe distribution
+      else if (s.intradayFade >= 0.8) l2 -= 20; // gave back ≥80% of gap-up
+      else if (s.intradayFade >= 0.6) l2 -= 12; // gave back 60-80%
+      else if (s.intradayFade >= 0.4) l2 -=  6; // gave back 40-60%
+      // < 0.4 means held most of the gap — constructive, no penalty
+    } else {
+      // Flat/small-gap or gap-down day — fade = gave back intraday rally
+      if      (s.intradayFade >= 1.5) l2 -= 25; // rallied then closed below open — clear distribution
+      else if (s.intradayFade >= 0.8) l2 -= 15; // gave back most of intraday move
+      else if (s.intradayFade >= 0.6) l2 -=  8; // moderate fade
+      // < 0.6 acceptable on non-gap days
+    }
   }
   // Price vs prior resistance
   if (s.priorResistance && p > 0) {
@@ -2522,6 +2533,9 @@ function preAnalyse(s, holdPeriod, minRR) {
   if (s.trend === 'downtrend' && verdict === 'buy') verdict = 'watch';
   // P3B: Weekly downtrend override — cap at watch
   if (weeklyOverride === 'watch' && verdict === 'buy') verdict = 'watch';
+  // Fade override — closed below open = distribution day, never buy
+  // intradayFade ≥ 1.5 means price closed below its open (beyond 100% fade)
+  if (s.intradayFade != null && s.intradayFade >= 1.5 && verdict === 'buy') verdict = 'watch';
 
   return {
     entry, stop, target, targetBasis,
@@ -2531,7 +2545,8 @@ function preAnalyse(s, holdPeriod, minRR) {
     scores: {
       setup: l1, technical: l2, fundamental: l3,
       risk: l4, plan: l5, relStrength: l6, overall: overallScoreGated,
-      weeklyPenalty, weeklyNote   // P3B: expose for debug log and card display
+      weeklyPenalty, weeklyNote,   // P3B: expose for debug log and card display
+      fadeOverride: s.intradayFade != null && s.intradayFade >= 1.5 // P calibration: flag for card
     },
     verdict
   };
@@ -3267,7 +3282,8 @@ async function runAnalysis() {
         const sentStr = (s._newsSentiment != null && s._newsSentiment !== 0)
           ? ` sent=${s._newsSentiment > 0 ? '+' : ''}${s._newsSentiment}${s._newsTension ? '⚡' : ''}`
           : '';
-        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr}${szStr}${sentStr})`;
+        const fadeWarn = pa.scores.fadeOverride ? ' ⚠FADE-OVERRIDE' : '';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr}${szStr}${sentStr}${fadeWarn})`;
       }).join(' · ');
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
