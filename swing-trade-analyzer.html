@@ -2168,6 +2168,28 @@ function preAnalyse(s, holdPeriod, minRR) {
     else if (s.volRatio >= 1.0) l2 += 5;
     else if (s.volRatio <  0.7) l2 -= 10; // weak volume — suspect breakout
   }
+  // P3C: Same-day gap-specific volume check
+  // Gap-ups on low volume are the most common false buy signal — separate penalty/bonus
+  // on top of the general volRatio check above.
+  // Gap-downs absorbed on high volume = genuine buying (separate bonus).
+  let volGapFlag = null; // exposed for diagnostic + prompt injection
+  if (s.volRatio != null && s.gapPct != null) {
+    if (s.gapPct >= 1.0 && s.volRatio < 0.7) {
+      l2 -= 8;  // gap-up on below-average volume — no institutional conviction
+      volGapFlag = 'lowVolGap';
+    } else if (s.gapPct >= 1.0 && s.volRatio >= 1.5) {
+      l2 += 6;  // gap-up confirmed by strong volume — institutional buying
+      volGapFlag = 'highVolGap';
+    } else if (s.gapPct <= -1.0 && s.volRatio >= 1.5) {
+      l2 += 8;  // gap-down absorbed on high volume — capitulation/reversal signal
+      volGapFlag = 'highVolAbsorb';
+    } else if (s.gapPct <= -1.0 && s.volRatio < 0.7) {
+      l2 -= 5;  // gap-down on low volume — no buyers stepped in
+      volGapFlag = 'lowVolDrift';
+    }
+  }
+  // Attach to s object so buildPrompt and diagnostics can read it
+  s._volGapFlag = volGapFlag;
   // Volume accumulation/distribution over last 5 bars (NEW)
   if (s.volAccumScore != null) {
     if      (s.volAccumScore >= 2)  l2 += 8;  // strong accumulation pattern
@@ -2563,7 +2585,10 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     const weeklyStr = (s.wRsi != null || s.wTrend != null)
       ? ` W-RSI=${s.wRsi??'?'} W-trend=${s.wTrend??'?'}`
       : '';
-    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${weeklyStr}${earningsPromptStr(s.ticker)}`;
+    const volGapStr = s._volGapFlag
+      ? ` volGap=${s._volGapFlag}(${s.volRatio != null ? s.volRatio + 'x' : '?'})`
+      : (s.volRatio != null ? ` volRatio=${s.volRatio}x` : '');
+    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${weeklyStr}${volGapStr}${earningsPromptStr(s.ticker)}`;
 
     // ── Per-stock news block ──────────────────────────────────────────────────
     // Inject up to 3 recent Polygon headlines directly below each stock's data.
@@ -2731,6 +2756,14 @@ async function runAnalysis() {
       dbg(`✓ SMH RSI benchmark: ${window._smhRSI} — relative strength scoring active`, 'ok');
     }
 
+    // P3B: Weekly gate data availability check
+    const wkDataCount = stockData.filter(s => s.wRsi != null).length;
+    if (wkDataCount > 0) {
+      dbg(`◈ Weekly gate: ${wkDataCount}/117 tickers with weekly bar data`, 'ok');
+    } else {
+      dbg(`⚠ Weekly gate: 0/117 tickers returned weekly bars — gate inactive this run`, 'info');
+    }
+
     // ── Phase 2: Pre-score ALL stocks in JS — free, instant ─────────────────
     const CLAUDE_SCORE_THRESHOLD = 80; // only send to Claude if score meets this
     const minRRnum = parseFloat(minRR);
@@ -2858,7 +2891,10 @@ async function runAnalysis() {
         const wkStr = s.wRsi != null
           ? ` W-RSI=${s.wRsi} W=${s.wTrend||'?'}${pa.scores.weeklyPenalty > 0 ? ` −${pa.scores.weeklyPenalty}` : ''}`
           : '';
-        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr})`;
+        const vgStr = s._volGapFlag
+          ? ` vg=${s._volGapFlag}(${s.volRatio}x)`
+          : '';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr})`;
       }).join(' · ');
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
