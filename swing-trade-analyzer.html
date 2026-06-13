@@ -346,7 +346,13 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 .pos-act-btn{background:none;border:none;cursor:pointer;font-size:11px;color:var(--dim);padding:2px 4px;border-radius:3px;transition:color .15s;font-family:var(--mono)}
 .pos-act-btn:hover{color:var(--bear)}
 .pos-act-edit:hover{color:var(--accent2)!important}
-.pos-loading{padding:12px 18px;font-size:11px;color:var(--dim);font-style:italic}
+.pos-status-exit{background:rgba(217,48,85,.12);color:#b0253f;border:1px solid rgba(217,48,85,.3);animation:breach-pulse 1.2s ease-in-out infinite}
+.pos-status-exit-target{background:rgba(26,111,204,.1);color:#1a5cb0;border:1px solid rgba(26,111,204,.25);animation:breach-pulse 1.8s ease-in-out infinite}
+.pos-status-exit-degraded{background:rgba(201,122,10,.12);color:#9a5e08;border:1px solid rgba(201,122,10,.3);animation:breach-pulse 1.5s ease-in-out infinite}
+.pos-exit-reason{font-size:9px;color:var(--muted);margin-top:3px;font-style:italic;max-width:140px}
+.pos-dismiss-btn{font-size:9px;color:var(--dim);background:none;border:1px solid var(--border2);border-radius:3px;padding:1px 5px;cursor:pointer;font-family:var(--mono);margin-top:3px;transition:all .15s}
+.pos-dismiss-btn:hover{color:var(--accent);border-color:var(--accent)}
+.pos-badge-exit{background:rgba(217,48,85,.15);color:var(--bear);border:1px solid rgba(217,48,85,.3);border-radius:10px;font-size:9px;font-weight:700;padding:1px 7px;letter-spacing:.05em;display:none;margin-left:4px}
 /* ── P2B Earnings Calendar ───────────────────────────────────────────────── */
 .earn-panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
 .earn-panel-header{display:flex;align-items:center;justify-content:space-between;padding:11px 18px;background:var(--surface2);border-bottom:1px solid var(--border);cursor:pointer;user-select:none;transition:background .12s}
@@ -399,6 +405,7 @@ canvas.spark-inline{display:block;width:120px;height:40px}
         <span style="font-size:14px">📍</span>
         <span class="pos-header-title">Open Positions</span>
         <span class="pos-badge-alert" id="posBadgeAlert">⚠ STOP BREACHED</span>
+        <span class="pos-badge-exit" id="posBadgeExit">🚨 EXIT SIGNAL</span>
         <span id="posHeaderCount" style="font-size:10px;color:var(--muted)"></span>
       </div>
       <div class="pos-header-right" onclick="event.stopPropagation()">
@@ -2662,6 +2669,10 @@ async function runAnalysis() {
     // P2A: Inject live prices from this run into position tracker (free — data already fetched)
     injectRunPricesIntoPositions(stockData);
 
+    // P3A: Evaluate exit signals against fresh run data — fires alerts on open positions
+    // Runs after preScored is built so verdict + score are available per stock
+    // (called again below after preScored is ready)
+
     const preScored = stockData.map(s => ({
       s,
       pa: preAnalyse(s, holdPeriod, minRRnum)
@@ -2676,6 +2687,9 @@ async function runAnalysis() {
         dbg(`📅 Earnings risk: ${s.ticker} reports ${info.label} (${info.days}d) — score −${info.penalty}${info.severity === 'imminent' ? ', verdict → watch' : ''}`, 'info');
       }
     });
+
+    // P3A: Exit signal evaluation — preScored + earnings penalties now applied
+    evaluateExitSignals(stockData, preScored);
 
     // ── ETF exclusion — never send benchmark ETFs to Claude ──────────────────
     // SMH/SOXX/BOTZ are in the universe for L6 benchmark purposes only.
@@ -4156,9 +4170,18 @@ function renderPositions() {
         anyBreach = true;
       } else if (p.target && price >= p.target) {
         status = 'target'; statusLabel = '🎯 Target Hit';
+      } else if (p.exitSignal === 'exit-target') {
+        status = 'exit-target'; statusLabel = '🎯 Near Target';
+      } else if (p.exitSignal === 'exit') {
+        status = 'exit'; statusLabel = '🚨 Exit Signal';
+      } else if (p.exitSignal === 'exit-degraded') {
+        status = 'exit-degraded'; statusLabel = '⚠ Thesis Degraded';
       } else if (stopDistPct !== null && stopDistPct <= 3) {
         status = 'near'; statusLabel = '⚠ Near Stop';
       }
+    } else if (p.exitSignal) {
+      // Exit signal from prior run, no live price yet
+      status = p.exitSignal; statusLabel = p.exitSignal === 'exit-target' ? '🎯 Near Target' : p.exitSignal === 'exit' ? '🚨 Exit Signal' : '⚠ Thesis Degraded';
     }
 
     // Days held
@@ -4209,6 +4232,8 @@ function renderPositions() {
       <td class="td-r"><div style="font-size:12px;color:var(--muted)">${targetStr}</div></td>
       <td>
         <span class="pos-status pos-status-${status}">${statusLabel}</span>
+        ${p.exitReason ? `<div class="pos-exit-reason">${p.exitReason}</div>` : ''}
+        ${p.exitSignal ? `<button class="pos-dismiss-btn" onclick="dismissExitSignal(${idx})">Dismiss</button>` : ''}
       </td>
       <td style="white-space:nowrap">
         <button class="pos-act-btn pos-act-edit" onclick="openPosForm(${idx})" title="Edit">✎</button>
@@ -4234,22 +4259,151 @@ function renderPositions() {
       <tbody>${rows}</tbody>
     </table>`;
 
-  // Header count + breach badge
+  // Header count + breach badge + exit badge
   const countEl = document.getElementById('posHeaderCount');
   if (countEl) countEl.textContent = `${_positions.length} position${_positions.length !== 1 ? 's' : ''}`;
 
   const badgeEl = document.getElementById('posBadgeAlert');
   if (badgeEl) badgeEl.style.display = anyBreach ? 'inline-block' : 'none';
 
+  const snoozeSet = _getSnoozeSet();
+  const exitBadge = document.getElementById('posBadgeExit');
+  if (exitBadge) {
+    const hasExit = _positions.some(p => p.exitSignal && !snoozeSet.has(`${p.ticker}_${p.entry}`));
+    exitBadge.style.display = hasExit ? 'inline-block' : 'none';
+  }
+
   // Re-measure panel height
   const body = document.getElementById('posPanelBody');
   if (body && _posPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
 }
 
+// ── P3A Exit Signal Engine ────────────────────────────────────────────────────
+// Called after each run. Compares open positions against fresh stockData + preScored.
+// Fires exit signals when RSI, verdict, target proximity, or score cross thresholds.
+// Signals persist on the position object; user can dismiss per-session.
+
+const EXIT_RSI_THRESHOLD   = 72;   // RSI at or above → overbought exit
+const EXIT_SCORE_FLOOR     = 55;   // Score below → thesis degraded
+const EXIT_TARGET_PCT      = 2.0;  // Within 2% of target → near target alert
+const EXIT_SNOOZE_KEY      = 'swingedge_exit_snooze'; // sessionStorage key
+
+function _getSnoozeSet() {
+  try {
+    const raw = sessionStorage.getItem(EXIT_SNOOZE_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch(e) { return new Set(); }
+}
+
+function _saveSnoozeSet(set) {
+  try { sessionStorage.setItem(EXIT_SNOOZE_KEY, JSON.stringify([...set])); } catch(e) {}
+}
+
+function dismissExitSignal(idx) {
+  const p = _positions[idx];
+  if (!p) return;
+  // Snooze key = ticker + entry price (unique per position)
+  const key = `${p.ticker}_${p.entry}`;
+  const snoozeSet = _getSnoozeSet();
+  snoozeSet.add(key);
+  _saveSnoozeSet(snoozeSet);
+  // Clear the exit signal on the position object for this session
+  p.exitSignal = null;
+  p.exitReason = null;
+  renderPositions();
+}
+
+function evaluateExitSignals(stockData, preScored) {
+  if (!_positions.length || !stockData) return;
+
+  const snoozeSet = _getSnoozeSet();
+
+  // Build lookup maps from run data
+  const stockMap  = new Map(stockData.map(s  => [s.ticker, s]));
+  const scoreMap  = new Map((preScored || []).map(({ s, pa }) => [s.ticker, pa]));
+
+  let anyExitSignal = false;
+
+  _positions.forEach((p, idx) => {
+    const snoozeKey = `${p.ticker}_${p.entry}`;
+
+    // Skip snoozed positions for this session
+    if (snoozeSet.has(snoozeKey)) return;
+
+    // Skip breached stops — already flagged, different signal
+    const live  = _posLivePrices[p.ticker];
+    const price = live?.price || null;
+    if (price && price <= p.stop) return;
+
+    const s  = stockMap.get(p.ticker);
+    const pa = scoreMap.get(p.ticker);
+
+    // No data for this ticker in run → skip
+    if (!s && !pa) return;
+
+    // Evaluate triggers in priority order
+    let signal = null, reason = null;
+
+    // 1. Near target (highest priority — action needed soonest)
+    if (price && p.target) {
+      const distToTarget = ((p.target - price) / p.target) * 100;
+      if (distToTarget <= EXIT_TARGET_PCT && distToTarget >= 0) {
+        signal = 'exit-target';
+        reason = `Within ${distToTarget.toFixed(1)}% of target $${p.target.toFixed(2)} — scale out`;
+      }
+    }
+
+    // 2. RSI overbought
+    if (!signal && s?.rsi14 != null && s.rsi14 >= EXIT_RSI_THRESHOLD) {
+      signal = 'exit';
+      reason = `RSI ${s.rsi14} ≥ ${EXIT_RSI_THRESHOLD} — overbought, consider taking profits`;
+    }
+
+    // 3. Verdict degraded to watch/avoid
+    if (!signal && pa?.verdict && ['watch', 'avoid'].includes(pa.verdict)) {
+      // Only fire if score was previously high (avoid firing on every borderline name)
+      if (pa.scores?.overall < 70) {
+        signal = 'exit-degraded';
+        reason = `Verdict → ${pa.verdict} (score ${pa.scores?.overall}) — setup deteriorated`;
+      }
+    }
+
+    // 4. Score fell below floor
+    if (!signal && pa?.scores?.overall != null && pa.scores.overall < EXIT_SCORE_FLOOR) {
+      signal = 'exit-degraded';
+      reason = `Score dropped to ${pa.scores.overall} — thesis invalidated`;
+    }
+
+    // Update position object
+    const prev = p.exitSignal;
+    p.exitSignal = signal || null;
+    p.exitReason = reason || null;
+
+    if (signal && signal !== prev) {
+      anyExitSignal = true;
+      dbg(`🚨 Exit signal: ${p.ticker} — ${reason}`, 'info');
+    } else if (!signal && prev) {
+      dbg(`✓ Exit signal cleared: ${p.ticker} — conditions normalised`, 'ok');
+    }
+  });
+
+  // Save updated positions (exit signals persist across page reloads until dismissed)
+  savePosData();
+
+  // Show/hide exit badge in panel header
+  const exitBadge = document.getElementById('posBadgeExit');
+  if (exitBadge) {
+    const hasAny = _positions.some(p => p.exitSignal && !snoozeSet.has(`${p.ticker}_${p.entry}`));
+    exitBadge.style.display = hasAny ? 'inline-block' : 'none';
+  }
+
+  renderPositions();
+}
+
 // ── Init (called from DOMContentLoaded) ───────────────────────────────────────
 function initPositionTracker() {
   loadPosData();
-  renderPositions();
+  renderPositions(); // renderPositions handles exit badge restore from saved positions
   // Set panel body height for open state
   const body = document.getElementById('posPanelBody');
   if (body) body.style.maxHeight = body.scrollHeight + 'px';
