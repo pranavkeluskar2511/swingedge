@@ -2702,8 +2702,16 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     // Inject up to 3 recent Polygon headlines directly below each stock's data.
     // Only added when news exists — no placeholder when empty.
     const newsLines = newsMap.get(s.ticker) || [];
+    const sentScore = s._newsSentiment;
+    const tension   = s._newsTension;
+    let sentPrefix  = '';
+    if (sentScore != null && newsLines.length > 0) {
+      const sentLabel = sentScore >= 2 ? 'BULLISH' : sentScore >= 1 ? 'MILD_BULLISH' :
+                        sentScore <= -2 ? 'BEARISH' : sentScore <= -1 ? 'MILD_BEARISH' : 'NEUTRAL';
+      sentPrefix = `[SENTIMENT:${sentScore > 0 ? '+' : ''}${sentScore} ${sentLabel}${tension ? ` TENSION:${tension}` : ''}] `;
+    }
     const newsBlock = newsLines.length > 0
-      ? `\n${s.ticker} RECENT NEWS:\n${newsLines.map(l => `  ${l}`).join('\n')}`
+      ? `\n${s.ticker} RECENT NEWS: ${sentPrefix}\n${newsLines.map(l => `  ${l}`).join('\n')}`
       : '';
 
     return dataLine + newsBlock;
@@ -3005,7 +3013,10 @@ async function runAnalysis() {
         const szStr = s.structureZone
           ? ` zone=${s.structureZone}`
           : '';
-        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr}${szStr})`;
+        const sentStr = (s._newsSentiment != null && s._newsSentiment !== 0)
+          ? ` sent=${s._newsSentiment > 0 ? '+' : ''}${s._newsSentiment}${s._newsTension ? '⚡' : ''}`
+          : '';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr}${szStr}${sentStr})`;
       }).join(' · ');
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
@@ -3030,6 +3041,70 @@ async function runAnalysis() {
     if (forClaude.length > 0) {
       const qualifyingTickers = forClaude.map(({ s }) => s.ticker);
       newsMap = await fetchAllNews(qualifyingTickers);
+    }
+
+    // ── Phase 2.6: P4C News sentiment pre-score ────────────────────────────
+    // Score headlines before Claude sees them. Identifies bullish/bearish bias
+    // and detects tension (news vs gap direction mismatch).
+    // Injects sentimentScore + tensionFlag onto s object for use in prompt + L2.
+    const SENT_BULLISH = ['beat','beats','beats estimates','raised guidance','upgrade','upgraded',
+      'partnership','contract','wins contract','awarded','record revenue','record quarter',
+      'growth','expansion','approved','breakthrough','outperform','momentum','strong quarter',
+      'exceeds','surpasses','positive','bullish'];
+    const SENT_BEARISH = ['miss','misses','missed estimates','cut guidance','downgrade','downgraded',
+      'investigation','recall','loss','layoffs','layoff','warning','delay','delayed','suspended',
+      'below expectations','disappoints','disappointing','weak','decline','declining','concern',
+      'risk','negative','cautious','sell-off'];
+
+    const sentimentLog = [];
+    forClaude.forEach(({ s }) => {
+      const lines = newsMap.get(s.ticker) || [];
+      if (lines.length === 0) {
+        s._newsSentiment = 0;
+        s._newsTension   = null;
+        return;
+      }
+
+      // Score each headline — +1 per bullish keyword, −1 per bearish keyword, cap ±2
+      let score = 0;
+      const combined = lines.join(' ').toLowerCase();
+      SENT_BULLISH.forEach(kw => { if (combined.includes(kw)) score += 1; });
+      SENT_BEARISH.forEach(kw => { if (combined.includes(kw)) score -= 1; });
+      score = Math.max(-2, Math.min(2, score)); // clamp to ±2
+
+      // Tension detection — mismatch between news sentiment and gap direction
+      let tension = null;
+      const gapUp   = s.gapPct != null && s.gapPct >= 1.0;
+      const gapDown = s.gapPct != null && s.gapPct <= -1.0;
+      if      (score >= 1 && gapDown) tension = 'positive_news+gap_down';  // sell-the-news risk
+      else if (score <= -1 && gapUp)  tension = 'negative_news+gap_up';    // relief rally / trap
+
+      s._newsSentiment = score;
+      s._newsTension   = tension;
+
+      // Apply L2 micro-adjustment via direct score adjustment on preScored entry
+      // Find the matching preScored entry and nudge overall score
+      const psEntry = preScored.find(x => x.s.ticker === s.ticker);
+      if (psEntry) {
+        let sentAdj = 0;
+        if      (score >= 2)  sentAdj = +5;  // strongly bullish news
+        else if (score >= 1)  sentAdj = +2;  // mildly bullish
+        else if (score <= -2) sentAdj = -8;  // strongly bearish — confirmation of weakness
+        else if (score <= -1) sentAdj = -4;  // mildly bearish
+        if (tension)          sentAdj -= 3;  // tension adds caution regardless of direction
+        if (sentAdj !== 0) {
+          psEntry.pa.scores.overall = Math.max(0, Math.min(100, psEntry.pa.scores.overall + sentAdj));
+        }
+      }
+
+      // Build log entry
+      const sentLabel = score >= 2 ? 'bullish' : score >= 1 ? 'mildly bullish' :
+                        score <= -2 ? 'bearish' : score <= -1 ? 'mildly bearish' : 'neutral';
+      sentimentLog.push(`${s.ticker}(${score > 0 ? '+' : ''}${score} ${sentLabel}${tension ? '·tension' : ''})`);
+    });
+
+    if (sentimentLog.length > 0) {
+      dbg(`◈ Sentiment: ${sentimentLog.join(' ')}`, 'info');
     }
 
     // ── Phase 3: Claude analysis — only for high-scoring stocks ─────────────
