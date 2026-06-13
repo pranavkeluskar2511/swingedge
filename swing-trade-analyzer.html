@@ -2563,8 +2563,10 @@ function preAnalyseShort(s, holdPeriod, minRR) {
   const rsi = s.rsi14;
 
   // ── Hard disqualifiers — never short these ────────────────────────────────
-  // RSI < 30: already washed out, risk of violent short-squeeze
-  if (rsi != null && rsi < 30) return null;
+  // RSI < 50: stock already sold off — not overbought enough for short entry.
+  // Short setups require RSI 55–75. Stocks at RSI 30–49 are potential longs,
+  // not shorts — shorting oversold names leads to short squeezes.
+  if (rsi != null && rsi < 50) return null;
   // Uptrend with price well above both MAs: structure not broken
   if (s.trend === 'strong uptrend' && (!s.ma50 || p > s.ma50 * 1.05)) return null;
   // ATR extremes (same as long side)
@@ -2600,12 +2602,14 @@ function preAnalyseShort(s, holdPeriod, minRR) {
   let l2s = 45;
 
   // RSI zone — ideal for short entry: overbought but not extreme
+  // RSI must be ≥50 to even reach here (hard disqualifier above)
   if (rsi != null) {
-    if      (rsi >= 70 && rsi < 80) l2s += 20; // ideal short RSI zone
-    else if (rsi >= 65 && rsi < 70) l2s += 10; // acceptable
-    else if (rsi >= 55 && rsi < 65) l2s +=  5; // mild overextension
+    if      (rsi >= 70 && rsi < 80) l2s += 25; // ideal short RSI zone — prime entry
+    else if (rsi >= 65 && rsi < 70) l2s += 15; // acceptable — getting stretched
+    else if (rsi >= 60 && rsi < 65) l2s +=  5; // mild overextension — marginal
+    else if (rsi >= 55 && rsi < 60) l2s -=  5; // not stretched enough — weak short signal
+    else if (rsi >= 50 && rsi < 55) l2s -= 15; // barely above midpoint — poor short
     else if (rsi >= 80)             l2s -=  5; // extreme — short-squeeze risk
-    else if (rsi < 55)              l2s -= 15; // not overbought enough for short entry
   }
 
   // MACD — want bearish (negative histogram = momentum turning down)
@@ -2742,10 +2746,12 @@ function preAnalyseShort(s, holdPeriod, minRR) {
   // ── Short verdict ────────────────────────────────────────────────────────
   let verdict = 'avoid';
   if      (shortScore >= 72 && actualRR >= minRR) verdict = 'short';
-  else if (shortScore >= 45 || actualRR >= minRR) verdict = 'watch_short';
+  else if (shortScore >= 52 || actualRR >= minRR) verdict = 'watch_short';
 
   // ── Hard overrides ───────────────────────────────────────────────────────
-  if (rsi != null && rsi < 40 && verdict === 'short') verdict = 'watch_short'; // not overbought enough
+  // RSI must be in overbought zone for a clean short entry
+  if (rsi != null && rsi < 58 && verdict === 'short') verdict = 'watch_short'; // not stretched enough
+  if (rsi != null && rsi < 55 && verdict === 'watch_short') verdict = 'avoid';  // too borderline
   if (s.trend === 'strong uptrend' && verdict === 'short') verdict = 'watch_short';
   if (s.wTrend === 'up' && verdict === 'short') verdict = 'watch_short'; // weekly uptrend = short risk
 
@@ -3485,6 +3491,22 @@ async function runAnalysis() {
       document.getElementById('lastUpdated').textContent =
         `Updated ${new Date().toLocaleTimeString()} — ${allResults.length} stocks · ${claudeSent} via Claude · ${jsOnlyCount} JS-only · $${runCost.toFixed(5)}`;
       dbg(`✓ Complete — ${allResults.length}/${tickers.length} | Claude: ${claudeSent} | JS-only: ${jsOnlyCount}`, 'ok');
+
+      // P6A: Append this run to historical log
+      logRunRecord({
+        smhRsi:      smhData?.rsi14 ?? null,
+        smhGap:      smhData?.gap   ?? null,
+        qualifiers:  forClaude.map(x => ({ ticker: x.s.ticker, score: x.pa.scores.overall, verdict: x.pa.verdict })),
+        shorts:      shortScored.map(x => ({ ticker: x.s.ticker, score: x.pa.scores.overall, verdict: x.pa.verdict })),
+        claudeSent,
+        jsOnlyCount,
+        cost:        runCost,
+        tokens:      runTokens.input + runTokens.output,
+        batches:     runTokens.batches,
+        failedBatches: runTokens.failedBatches,
+        holdPeriod,
+        watchlist:   currentWatchlist,
+      });
     } else {
       renderError('No results returned. Check API keys and try again.');
     }
@@ -4214,6 +4236,9 @@ function renderResults(results) {
         </button>
         <button class="dl-btn" onclick="exportData('csv')">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>CSV
+        </button>
+        <button class="dl-btn" onclick="exportRunLog()" title="Export run history log (all sessions)" style="color:var(--accent2);border-color:var(--accent2)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>History
         </button>
       </div>
     </div>
@@ -5435,6 +5460,128 @@ function logCorrelationWarnings(qualifyingTickers) {
       dbg(`⚠ Sector correlation: ${ticker} (${getSector(ticker)}) matches open position${corr.length > 1 ? 's' : ''}: ${corr.join(', ')}`, 'info');
     }
   });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P6A HISTORICAL RUN LOGGING
+// Appends a compact record after every successful run to localStorage.
+// 90-day rolling window (~270 runs at 3/day). Export as CSV available.
+// Prerequisite for P6B outcome tracking and P6C threshold optimization.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const RUN_LOG_KEY     = 'swingedge_run_log_v1';
+const RUN_LOG_MAX     = 300; // max records — ~3 months at 3 runs/day
+const RUN_LOG_EXPIRE  = 91;  // days — auto-expire records older than this
+
+function loadRunLog() {
+  try {
+    const raw = localStorage.getItem(RUN_LOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function saveRunLog(log) {
+  try { localStorage.setItem(RUN_LOG_KEY, JSON.stringify(log)); } catch(e) {}
+}
+
+function logRunRecord(data) {
+  try {
+    const log = loadRunLog();
+    const now = new Date();
+    const record = {
+      ts:           now.toISOString(),            // ISO timestamp
+      date:         now.toLocaleDateString('en-CA'), // YYYY-MM-DD local
+      time:         now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+      smhRsi:       data.smhRsi,
+      smhGap:       data.smhGap,
+      qualCount:    data.qualifiers.length,
+      shortCount:   data.shorts.length,
+      claudeSent:   data.claudeSent,
+      cost:         +data.cost.toFixed(5),
+      tokens:       data.tokens,
+      holdPeriod:   data.holdPeriod,
+      watchlist:    data.watchlist || 'Full Universe',
+      qualifiers:   data.qualifiers,  // [{ticker, score, verdict}]
+      shorts:       data.shorts,      // [{ticker, score, verdict}]
+    };
+
+    // Prepend newest first
+    log.unshift(record);
+
+    // Expire old records
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - RUN_LOG_EXPIRE);
+    const trimmed = log
+      .filter(r => new Date(r.ts) >= cutoff)
+      .slice(0, RUN_LOG_MAX);
+
+    saveRunLog(trimmed);
+    dbg(`📋 Run logged — ${trimmed.length} records in history`, 'info');
+  } catch(e) {
+    // Non-fatal — logging failure must never break a run
+  }
+}
+
+// ── Export run log as CSV ──────────────────────────────────────────────────────
+function exportRunLog() {
+  const log = loadRunLog();
+  if (!log.length) { alert('No run history yet. Run at least one analysis first.'); return; }
+
+  const rows = [
+    ['Date', 'Time', 'SMH RSI', 'SMH Gap%', 'Qualifiers', 'Shorts', 'Claude Sent', 'Cost $', 'Tokens', 'Hold', 'Watchlist', 'Top Qualifier', 'Top Qualifier Score']
+  ];
+
+  log.forEach(r => {
+    const topQ = r.qualifiers?.[0];
+    rows.push([
+      r.date,
+      r.time,
+      r.smhRsi ?? '',
+      r.smhGap ?? '',
+      r.qualCount ?? '',
+      r.shortCount ?? '',
+      r.claudeSent ?? '',
+      r.cost ?? '',
+      r.tokens ?? '',
+      r.holdPeriod ?? '',
+      r.watchlist ?? '',
+      topQ?.ticker ?? '',
+      topQ?.score ?? '',
+    ]);
+  });
+
+  const csv = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `swingedge_run_log_${new Date().toLocaleDateString('en-CA')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  dbg(`📋 Exported ${log.length} run records as CSV`, 'ok');
+}
+
+// ── Run log stats (shown in UI) ───────────────────────────────────────────────
+function getRunLogStats() {
+  const log = loadRunLog();
+  if (!log.length) return null;
+  const totalCost  = log.reduce((s, r) => s + (r.cost || 0), 0);
+  const avgQual    = log.reduce((s, r) => s + (r.qualCount || 0), 0) / log.length;
+  const avgCost    = totalCost / log.length;
+  const last7      = log.filter(r => {
+    const d = new Date(r.ts);
+    return (new Date() - d) <= 7 * 24 * 60 * 60 * 1000;
+  });
+  return {
+    total:    log.length,
+    oldest:   log[log.length - 1]?.date,
+    newest:   log[0]?.date,
+    totalCost: +totalCost.toFixed(4),
+    avgQual:  +avgQual.toFixed(1),
+    avgCost:  +avgCost.toFixed(5),
+    last7Days: last7.length,
+    last7Cost: +last7.reduce((s, r) => s + (r.cost || 0), 0).toFixed(4),
+  };
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
