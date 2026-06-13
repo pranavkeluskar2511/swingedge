@@ -2111,6 +2111,35 @@ async function fetchTickerData(ticker) {
   const swingHi60 = recentBars.length ? +Math.max(...recentBars.map(b => b.h)).toFixed(2) : null;
   const swingLo60 = recentBars.length ? +Math.min(...recentBars.map(b => b.l)).toFixed(2) : null;
 
+  // P4B: Price structure zone — identify what chart level the current price is near
+  // Determines whether an entry is "anchored" to a meaningful level or "floating in air"
+  // Uses ATR as the proximity threshold for all zone checks
+  let structureZone = 'air'; // default — no nearby structure
+  if (atr14 && price) {
+    const atrBand = atr14; // within 1× ATR = "near" a level
+    // Check in priority order — most specific first
+    if (priorResistance && price > priorResistance && ((price - priorResistance) / price) <= 0.02) {
+      // Just broke above prior resistance — strongest setup signal
+      structureZone = 'breakout';
+    } else if (consHigh && consLow) {
+      // Within the consolidation zone (last 10 bars range)
+      const distToConsHigh = Math.abs(price - consHigh);
+      const distToConsLow  = Math.abs(price - consLow);
+      if (distToConsHigh <= atrBand || distToConsLow <= atrBand || (price >= consLow && price <= consHigh)) {
+        structureZone = 'consolidation_base';
+      }
+    }
+    if (structureZone === 'air' && priorSupport && price > priorSupport) {
+      // Sitting just above prior support
+      if ((price - priorSupport) <= atrBand) structureZone = 'prior_support';
+    }
+    if (structureZone === 'air' && ma20 && Math.abs(price - ma20) <= atrBand * 0.75) {
+      structureZone = 'ma_support'; // hugging 20MA
+    } else if (structureZone === 'air' && ma50 && Math.abs(price - ma50) <= atrBand * 0.75) {
+      structureZone = 'ma_support'; // hugging 50MA
+    }
+  }
+
   // Recent bars for spark (last 30)
   const sparkBars = closedBars.slice(-30).map(b => b.c);
 
@@ -2154,6 +2183,7 @@ async function fetchTickerData(ticker) {
     volume, avgVol20, volRatio,
     rsi14, macd, ma20, ma50, ma200, atr14,
     wRsi, wMa10, wTrend,             // P3B: weekly indicators
+    structureZone,                   // P4B: chart structure zone at current price
     wk52Hi, wk52Lo, trend,
     priorResistance, priorSupport, consHigh, consLow, consRange, swingHi60, swingLo60,
     closes: closes.slice(-30), sparkBars,
@@ -2388,6 +2418,15 @@ function preAnalyse(s, holdPeriod, minRR) {
     l5 += 15; // chart-anchored target is more reliable
   }
   if (s.consRange && s.consRange > 0) l5 += 5; // clean consolidation range available
+
+  // P4B: Price structure zone bonus/penalty
+  const structuredEntry = s.structureZone && s.structureZone !== 'air';
+  if (s.structureZone === 'breakout')          l5 += 10; // entering at proven level break
+  else if (s.structureZone === 'consolidation_base') l5 += 7; // tight base pattern
+  else if (s.structureZone === 'prior_support')      l5 += 5; // support below = clean risk
+  else if (s.structureZone === 'ma_support')         l5 += 3; // MA acting as support
+  else if (s.structureZone === 'air')                l5 -= 5; // no nearby structure — less conviction
+
   l5 = clamp(l5, 0, 100);
 
   // ── Layer 6: Relative strength vs SMH benchmark (0–100) ─────────────────
@@ -2478,6 +2517,7 @@ function preAnalyse(s, holdPeriod, minRR) {
   return {
     entry, stop, target, targetBasis,
     stopDist, actualRR, upside, stopPct,
+    structuredEntry,                 // P4B: true when entry is at a chart-defined level
     rrIsChartAnchored: targetBasis.includes('resistance') || targetBasis.includes('swing') || targetBasis.includes('52w') || targetBasis.includes('measured'),
     scores: {
       setup: l1, technical: l2, fundamental: l3,
@@ -2577,7 +2617,14 @@ function generateNotes(s, pa) {
   const l4note = l4parts.join(' · ');
 
   // Layer 5: Entry/exit plan
-  const l5note = `R:R ${pa.actualRR} · target ${pa.targetBasis} · entry $${pa.entry}`;
+  const zoneLabel = s.structureZone ? {
+    breakout: 'entry at breakout above resistance',
+    consolidation_base: 'entry at consolidation base',
+    prior_support: 'entry above prior support',
+    ma_support: 'entry at moving average support',
+    air: 'entry floating — no nearby structure',
+  }[s.structureZone] || '' : '';
+  const l5note = `R:R ${pa.actualRR} · target ${pa.targetBasis} · entry $${pa.entry}${zoneLabel ? ` · ${zoneLabel}` : ''}`;
 
   // Layer 6: Relative strength vs SMH benchmark (NEW)
   let l6note = 'Relative strength — SMH not in universe';
@@ -2646,7 +2693,10 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     const volGapStr = s._volGapFlag
       ? ` volGap=${s._volGapFlag}(${s.volRatio != null ? s.volRatio + 'x' : '?'})`
       : (s.volRatio != null ? ` volRatio=${s.volRatio}x` : '');
-    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${weeklyStr}${volGapStr}${earningsPromptStr(s.ticker)}`;
+    const structStr = s.structureZone && s.structureZone !== 'air'
+      ? ` entry_zone=${s.structureZone}`
+      : ` entry_zone=air(no_nearby_structure)`;
+    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${weeklyStr}${volGapStr}${structStr}${earningsPromptStr(s.ticker)}`;
 
     // ── Per-stock news block ──────────────────────────────────────────────────
     // Inject up to 3 recent Polygon headlines directly below each stock's data.
@@ -2952,7 +3002,10 @@ async function runAnalysis() {
         const vgStr = s._volGapFlag
           ? ` vg=${s._volGapFlag}(${s.volRatio}x)`
           : '';
-        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr})`;
+        const szStr = s.structureZone
+          ? ` zone=${s.structureZone}`
+          : '';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr}${vgStr}${szStr})`;
       }).join(' · ');
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
@@ -3746,6 +3799,7 @@ function renderResults(results) {
       ...(live.wRsi != null   ? [['W-RSI (14)',  `${live.wRsi}${live.wRsi>75?' ↑OB':live.wRsi<30?' ↓OS':''}`]] : []),
       ...(live.wMa10 != null  ? [['10wk MA',     `$${fmt(live.wMa10)} ${live.price>live.wMa10?'↑':'↓'}`]] : []),
       ...(live.wTrend != null ? [['W-Trend',     live.wTrend]] : []),
+      ...(live.structureZone  ? [['Entry zone',  live.structureZone.replace(/_/g,' ')]] : []),
     ];
 
     const kvRows = arr => arr.filter(([,v])=>v&&v!=='—')
