@@ -1689,6 +1689,24 @@ async function polyGet(path) {
   return r.json();
 }
 
+// ── Direct Polygon call — bypasses Render proxy, always hits api.polygon.io ───
+// Used for weekly bars (P3B) which the Render proxy blocks/times out.
+// Polygon Starter plan supports direct browser CORS calls on all endpoints.
+async function polyGetDirect(path) {
+  if (!POLY_KEY) throw new Error('No Polygon key');
+  const sep = path.includes('?') ? '&' : '?';
+  const url = `https://api.polygon.io${path}${sep}apiKey=${POLY_KEY}`;
+  let r;
+  try {
+    r = await fetch(url, { mode: 'cors' });
+  } catch(e) { throw new Error(`Polygon direct network error: ${e.message}`); }
+  if (!r.ok) {
+    let body = ''; try { body = await r.text(); } catch(_) {}
+    throw new Error(`Polygon direct HTTP ${r.status} — ${body.slice(0,120)}`);
+  }
+  return r.json();
+}
+
 // ── Polygon news fetch — per qualifying stock ─────────────────────────────────
 // Fetches last 3 headlines for a single ticker filtered to last 48 hours.
 // Returns compact string for Claude injection, or '' if no recent news.
@@ -1877,8 +1895,9 @@ async function fetchTickerData(ticker) {
     // from=today 4:00am, to=today 9:30am for pre-market
     // Polygon free tier returns whatever is available
     polyGet(`/v2/aggs/ticker/${ticker}/range/1/minute/${localDateStr(new Date())}/${localDateStr(new Date())}?adjusted=true&sort=asc&limit=300&extended_hours=true`),
-    // P3B: Weekly bars — 52 weeks for weekly RSI(14) + 10-week MA
-    polyGet(`/v2/aggs/ticker/${ticker}/range/1/week/${from365}/${today}?adjusted=true&sort=asc&limit=60`)
+    // P3B: Weekly bars — direct browser call (bypasses Render proxy which blocks this endpoint)
+    // Polygon Starter CORS allows direct calls; failure is non-fatal via Promise.allSettled
+    polyGetDirect(`/v2/aggs/ticker/${ticker}/range/1/week/${from365}/${today}?adjusted=true&sort=asc&limit=60`)
   ]);
 
   const bars    = barsRes.status    === 'fulfilled' ? (barsRes.value.results    || []) : [];
