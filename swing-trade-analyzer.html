@@ -2744,9 +2744,11 @@ function preAnalyseShort(s, holdPeriod, minRR) {
   );
 
   // ── Short verdict ────────────────────────────────────────────────────────
+  // R:R alone is NOT sufficient for a short — requires score conviction too.
+  // Shorts are harder to call than longs; use higher thresholds.
   let verdict = 'avoid';
   if      (shortScore >= 72 && actualRR >= minRR) verdict = 'short';
-  else if (shortScore >= 52 || actualRR >= minRR) verdict = 'watch_short';
+  else if (shortScore >= 58 && actualRR >= minRR) verdict = 'watch_short'; // score AND R:R both required
 
   // ── Hard overrides ───────────────────────────────────────────────────────
   // RSI must be in overbought zone for a clean short entry
@@ -3154,7 +3156,7 @@ async function runAnalysis() {
     evaluateExitSignals(stockData, preScored);
 
     // P5A: Short side scoring — run on all stocks, separate from long pipeline
-    const SHORT_SCORE_THRESHOLD = 72;
+    const SHORT_SCORE_THRESHOLD = 58; // matches watch_short verdict floor
     const shortScored = stockData
       .filter(s => !ETF_EXCLUSIONS.has(s.ticker)) // exclude ETFs from shorts too
       .map(s => ({ s, pa: preAnalyseShort(s, holdPeriod, minRRnum) }))
@@ -3505,7 +3507,7 @@ async function runAnalysis() {
         batches:     runTokens.batches,
         failedBatches: runTokens.failedBatches,
         holdPeriod,
-        watchlist:   currentWatchlist,
+        watchlist:   typeof activeWL !== 'undefined' ? activeWL : 'Full Universe',
       });
     } else {
       renderError('No results returned. Check API keys and try again.');
