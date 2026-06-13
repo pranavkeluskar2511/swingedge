@@ -2043,14 +2043,21 @@ async function fetchTickerData(ticker) {
   const atr14 = calcATR(closedBars);
 
   // P3B: Weekly indicators — RSI(14), 10-week MA, weekly trend
-  // Primary: use fetched weekly bars. Fallback: synthesise weekly closes from
-  // daily bars (every 5th daily bar ≈ weekly close) when proxy blocks the endpoint.
+  // Primary: use fetched weekly bars via polyGetDirect.
+  // Fallback: synthesise from closedYearBars (365-day daily fetch, ~250 bars)
+  // — every 5th bar ≈ weekly close. Gives ~50 synthetic weeks, enough for
+  // RSI(14) + 10wkMA. closedBars (90-day) only has ~70 bars — too few.
   let wkCloses = wkBars.map(b => b.c);
-  if (wkCloses.length < 15 && closedBars.length >= 75) {
-    // Synthesise weekly closes from daily bars — take every 5th bar
-    const synth = [];
-    for (let i = 4; i < closedBars.length; i += 5) synth.push(closedBars[i].c);
-    if (synth.length >= 15) wkCloses = synth;
+  let wkSource = null;
+  if (wkCloses.length >= 15) {
+    wkSource = 'api';
+  } else {
+    // Use year bars for synthesis — reliable ~250 bars
+    if (closedYearBars.length >= 60) {
+      const synth = [];
+      for (let i = 4; i < closedYearBars.length; i += 5) synth.push(closedYearBars[i].c);
+      if (synth.length >= 15) { wkCloses = synth; wkSource = 'synth'; }
+    }
   }
   const wRsi   = wkCloses.length >= 15 ? calcRSI(wkCloses) : null;
   const wMa10  = wkCloses.length >= 10 ? sma(wkCloses, 10) : null;
@@ -2192,6 +2199,7 @@ async function fetchTickerData(ticker) {
     volume, avgVol20, volRatio,
     rsi14, macd, ma20, ma50, ma200, atr14,
     wRsi, wMa10, wTrend,             // P3B: weekly indicators
+    _wkSource: wkSource,             // P3B: 'api' | 'synth' | null — for debug reporting
     structureZone,                   // P4B: chart structure zone at current price
     wk52Hi, wk52Lo, trend,
     priorResistance, priorSupport, consHigh, consLow, consRange, swingHi60, swingLo60,
@@ -3135,9 +3143,12 @@ async function runAnalysis() {
     }
 
     // P3B: Weekly gate data availability check
-    const wkDataCount = stockData.filter(s => s.wRsi != null).length;
+    const wkDataCount  = stockData.filter(s => s.wRsi != null).length;
+    const wkRealCount  = stockData.filter(s => s.wRsi != null && (s._wkSource === 'api')).length;
+    const wkSynthCount = stockData.filter(s => s.wRsi != null && (s._wkSource === 'synth')).length;
     if (wkDataCount > 0) {
-      dbg(`◈ Weekly gate: ${wkDataCount}/117 tickers with weekly bar data`, 'ok');
+      const src = wkRealCount > 0 ? `${wkRealCount} real` : `${wkSynthCount} synthetic`;
+      dbg(`◈ Weekly gate: ${wkDataCount}/117 tickers with weekly bar data (${src})`, 'ok');
     } else {
       dbg(`⚠ Weekly gate: 0/117 tickers returned weekly bars — gate inactive this run`, 'info');
     }
