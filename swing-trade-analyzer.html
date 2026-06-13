@@ -383,6 +383,11 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 /* Earnings warning on result cards */
 .earn-warning{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:3px;background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.3);margin-left:6px;white-space:nowrap}
 .earn-warning-imminent{background:rgba(217,48,85,.1);color:var(--bear);border:1px solid rgba(217,48,85,.3)}
+/* ── P4A Sector Correlation ──────────────────────────────────────────────── */
+.pos-sector-bar{display:flex;flex-wrap:wrap;gap:4px;padding:6px 18px 10px;border-top:1px solid var(--border)}
+.pos-sector-pill{font-size:9px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:10px;background:rgba(26,111,204,.07);color:var(--accent2);border:1px solid rgba(26,111,204,.18);white-space:nowrap}
+.pos-sector-pill.concentrated{background:rgba(217,48,85,.08);color:var(--bear);border-color:rgba(217,48,85,.25)}
+.corr-warning{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:3px;background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.3);margin-top:4px;white-space:nowrap}
 </style>
 <body>
 <div class="app">
@@ -2899,6 +2904,9 @@ async function runAnalysis() {
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
 
+    // P4A: Log sector correlation warnings for qualifying stocks vs open positions
+    logCorrelationWarnings(forClaude.map(x => x.s.ticker));
+
     // Build JS-only results immediately — no API call needed
     jsOnly.forEach(({ s, pa }) => {
       allResults.push(buildResult(s, pa, { entryNote:'', exitNote:'', stopNote:'' }));
@@ -3697,6 +3705,7 @@ function renderResults(results) {
           <div class="a-ticker">${r.ticker}</div>
           <div class="a-name">${r.companyName||''}</div>
           <div style="font-size:12px;margin-top:4px">${priceDisplay}${earningsBadgeHtml(r.ticker)}</div>
+          ${corrWarningHtml(r.ticker)}
         </div>
         <div class="a-prices">
           <div class="a-price-cell"><div class="a-price-label">Entry</div><div class="a-price-val pv-entry">$${fmt(r.entryPrice)}</div></div>
@@ -4326,6 +4335,7 @@ function renderPositions() {
     <tr>
       <td>
         <div class="pos-ticker-cell">${p.ticker}</div>
+        <div style="font-size:9px;color:var(--dim);margin-top:1px;letter-spacing:.03em">${getSector(p.ticker)}</div>
         ${p.notes ? `<div class="pos-notes" title="${p.notes}">${p.notes}</div>` : ''}
         ${daysStr ? `<div class="pos-days">${daysStr}</div>` : ''}
       </td>
@@ -4372,7 +4382,8 @@ function renderPositions() {
         </tr>
       </thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>
+    ${buildSectorConcentrationBar()}`;
 
   // Header count + breach badge + exit badge
   const countEl = document.getElementById('posHeaderCount');
@@ -4763,6 +4774,122 @@ function earningsPromptStr(ticker) {
     return ` ⚠EARNINGS_IN_${days}D(${label})_FORCED_WATCH`;
   }
   return ` EARNINGS_IN_${days}D(${label})_CAUTION`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P4A SECTOR CORRELATION WARNING
+// Static sector tags for all 117 tickers. After each run, checks open
+// positions against qualifying stocks for same-sector concentration.
+// Informational only — no score impact. Decision stays with the trader.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SECTOR_MAP = {
+  // AI GPUs
+  'NVDA':'AI GPU', 'AMD':'AI GPU', 'AVGO':'AI GPU',
+  // Equipment
+  'ASML':'Equipment', 'AMAT':'Equipment', 'LRCX':'Equipment', 'KLAC':'Equipment',
+  'ASMIY':'Equipment', 'ONTO':'Equipment', 'ACLS':'Equipment', 'VECO':'Equipment',
+  'UCTT':'Equipment', 'ICHR':'Equipment', 'COHU':'Equipment', 'ENTG':'Equipment',
+  'AXTI':'Equipment', 'KLIC':'Equipment', 'TTMI':'Equipment', 'AMKR':'Equipment',
+  'TER':'Equipment',
+  // EDA / IP
+  'CDNS':'EDA/IP', 'SNPS':'EDA/IP', 'ARM':'EDA/IP', 'CEVA':'EDA/IP', 'IDCC':'EDA/IP',
+  // Memory / Storage
+  'MU':'Memory', 'SNDK':'Memory', 'WDC':'Memory', 'STX':'Memory',
+  // IDMs / Foundries
+  'TSM':'Foundry', 'INTC':'Foundry', 'UMC':'Foundry', 'GFS':'Foundry',
+  'TSEM':'Foundry', 'STM':'Foundry',
+  // Analog / Mixed-signal
+  'TXN':'Analog', 'ADI':'Analog', 'MCHP':'Analog', 'ON':'Analog', 'NXPI':'Analog',
+  'SWKS':'Analog', 'MTSI':'Analog', 'LSCC':'Analog', 'SMTC':'Analog', 'CRUS':'Analog',
+  'ALGM':'Analog', 'MXL':'Analog', 'SLAB':'Analog', 'RMBS':'Analog',
+  // Networking / Data
+  'CRDO':'Networking', 'ANET':'Networking', 'CSCO':'Networking', 'NET':'Networking',
+  'IBM':'Networking',
+  // Servers / Cloud Infra
+  'SMCI':'Cloud Infra', 'DELL':'Cloud Infra', 'HPE':'Cloud Infra', 'VRT':'Cloud Infra',
+  'ALAB':'Cloud Infra',
+  // Cloud / AI Software
+  'AMZN':'AI Software', 'GOOGL':'AI Software', 'META':'AI Software', 'MSFT':'AI Software',
+  'ORCL':'AI Software', 'NOW':'AI Software', 'CRM':'AI Software', 'PLTR':'AI Software',
+  'ADBE':'AI Software', 'SNOW':'AI Software', 'DDOG':'AI Software', 'MDB':'AI Software',
+  'ESTC':'AI Software', 'HUBS':'AI Software', 'GTLB':'AI Software', 'RDDT':'AI Software',
+  'AI':'AI Software', 'DOCN':'AI Software', 'AMBA':'AI Software',
+  // Cybersecurity
+  'CRWD':'Cybersecurity', 'PANW':'Cybersecurity', 'ZS':'Cybersecurity',
+  'S':'Cybersecurity',
+  // Robotics / Automation
+  'TSLA':'Robotics', 'PATH':'Robotics', 'ROK':'Robotics', 'SYM':'Robotics',
+  'ISRG':'Robotics', 'MTRN':'Robotics', 'MBLY':'Robotics', 'INDI':'Robotics',
+  // Quantum
+  'IONQ':'Quantum', 'RGTI':'Quantum', 'QUBT':'Quantum',
+  // Power / Data Center
+  'ETN':'Power/DC', 'GEV':'Power/DC', 'CEG':'Power/DC', 'VST':'Power/DC',
+  'APLD':'Power/DC', 'CORZ':'Power/DC', 'IREN':'Power/DC', 'WULF':'Power/DC',
+  'CBRS':'Power/DC',
+  // Crypto
+  'COIN':'Crypto',
+  // Distribution
+  'ARW':'Distribution', 'AVT':'Distribution', 'SNX':'Distribution',
+  // Materials / Chemicals
+  'ENTG':'Equipment', 'WOLF':'Materials', 'COHR':'Materials', 'AXTI':'Equipment',
+  // ETFs (excluded from scoring but mapped for awareness)
+  'SMH':'ETF', 'SOXX':'ETF', 'BOTZ':'ETF',
+  // Others
+  'PLAB':'Equipment', 'AAPL':'AI Software', 'QCOM':'Analog', 'MRVL':'Networking',
+};
+
+// Get sector for a ticker — falls back to 'Other'
+function getSector(ticker) {
+  return SECTOR_MAP[ticker] || 'Other';
+}
+
+// ── Sector concentration meter ────────────────────────────────────────────────
+// Returns HTML for the sector bar shown at bottom of position panel
+function buildSectorConcentrationBar() {
+  if (!_positions.length) return '';
+  // Count positions per sector
+  const counts = {};
+  _positions.forEach(p => {
+    const sector = getSector(p.ticker);
+    counts[sector] = (counts[sector] || 0) + 1;
+  });
+  const pills = Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .map(([sector, count]) => {
+      const concentrated = count >= 2; // 2+ positions in same sector = concentration risk
+      return `<span class="pos-sector-pill${concentrated ? ' concentrated' : ''}">${sector} ×${count}</span>`;
+    }).join('');
+  return `<div class="pos-sector-bar">${pills}</div>`;
+}
+
+// ── Check if a new qualifying ticker correlates with open positions ───────────
+// Returns an array of correlated position tickers (same sector)
+function getCorrelatedPositions(ticker) {
+  const sector = getSector(ticker);
+  if (sector === 'Other' || sector === 'ETF') return [];
+  return _positions
+    .filter(p => getSector(p.ticker) === sector && p.ticker !== ticker)
+    .map(p => p.ticker);
+}
+
+// ── Correlation warning HTML for result cards ─────────────────────────────────
+function corrWarningHtml(ticker) {
+  const correlated = getCorrelatedPositions(ticker);
+  if (!correlated.length) return '';
+  const sector = getSector(ticker);
+  return `<span class="corr-warning">⚠ Correlated: ${correlated.join(', ')} (${sector})</span>`;
+}
+
+// ── Expose for debug log in runAnalysis ───────────────────────────────────────
+function logCorrelationWarnings(qualifyingTickers) {
+  if (!_positions.length || !qualifyingTickers.length) return;
+  qualifyingTickers.forEach(ticker => {
+    const corr = getCorrelatedPositions(ticker);
+    if (corr.length) {
+      dbg(`⚠ Sector correlation: ${ticker} (${getSector(ticker)}) matches open position${corr.length > 1 ? 's' : ''}: ${corr.join(', ')}`, 'info');
+    }
+  });
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
