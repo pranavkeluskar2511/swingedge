@@ -2043,8 +2043,15 @@ async function fetchTickerData(ticker) {
   const atr14 = calcATR(closedBars);
 
   // P3B: Weekly indicators — RSI(14), 10-week MA, weekly trend
-  // Need at least 15 weekly bars for RSI (14 periods + 1 seed)
-  const wkCloses = wkBars.map(b => b.c);
+  // Primary: use fetched weekly bars. Fallback: synthesise weekly closes from
+  // daily bars (every 5th daily bar ≈ weekly close) when proxy blocks the endpoint.
+  let wkCloses = wkBars.map(b => b.c);
+  if (wkCloses.length < 15 && closedBars.length >= 75) {
+    // Synthesise weekly closes from daily bars — take every 5th bar
+    const synth = [];
+    for (let i = 4; i < closedBars.length; i += 5) synth.push(closedBars[i].c);
+    if (synth.length >= 15) wkCloses = synth;
+  }
   const wRsi   = wkCloses.length >= 15 ? calcRSI(wkCloses) : null;
   const wMa10  = wkCloses.length >= 10 ? sma(wkCloses, 10) : null;
   // Weekly trend: compare current price to 10-week MA (1% tolerance = flat)
@@ -2992,6 +2999,12 @@ function parseJSON(raw) {
 // ── Main run ──────────────────────────────────────────────────────────────────
 const BATCH_SIZE = 6;        // 6 stocks per Claude call — eliminates 5+1 split waste
 const POLY_CONCURRENCY = 5;  // 5 parallel Polygon workers — reduced from 8 to prevent Render throttle stalls
+const CLAUDE_SCORE_THRESHOLD = 80; // minimum score to send to Claude
+const MAX_CLAUDE_QUALIFIERS  = 12; // cost cap — selloff days can push 14+ stocks through
+const ETF_EXCLUSIONS = new Set(['SMH', 'SOXX', 'BOTZ']); // never qualify for Claude or short scoring
+const ADR_PAIRS = [
+  ['ASML', 'ASMIY'], // ASMIY is US ADR for ASML — same underlying
+];
 let _isRunning = false; // guard against double-tap / double-click
 
 // ── Market Context — update manually each morning before running ──────────────
@@ -3107,7 +3120,6 @@ async function runAnalysis() {
     }
 
     // ── Phase 2: Pre-score ALL stocks in JS — free, instant ─────────────────
-    const CLAUDE_SCORE_THRESHOLD = 80; // only send to Claude if score meets this
     const minRRnum = parseFloat(minRR);
 
     // P2A: Inject live prices from this run into position tracker (free — data already fetched)
@@ -3154,12 +3166,7 @@ async function runAnalysis() {
       dbg(`◈ Short candidates: ${shortDiag}`, 'info');
     }
 
-    // ── ETF exclusion — never send benchmark ETFs to Claude ──────────────────
-    // SMH/SOXX/BOTZ are in the universe for L6 benchmark purposes only.
-    // They can score ≥80 on calm days — exclude them from qualifying.
-    const ETF_EXCLUSIONS = new Set(['SMH', 'SOXX', 'BOTZ']);
-
-    // ── L6 selloff dampener — correct inflation during broad sector selloffs ──
+    // ── L6 selloff dampener ───────────────────────────────────────────────────
     // When SMH gaps down hard, stocks that drop "less than average" get
     // inflated Δ values. A Δ=+13 when SMH is −4% means the stock dropped
     // 8% vs sector's 4% — not genuine strength. Dampen L6 scores proportionally.
@@ -3183,16 +3190,7 @@ async function runAnalysis() {
       dbg(`⚠ L6 selloff dampener active — SMH gap ${smhGapPct.toFixed(1)}%, dampFactor=${dampFactor.toFixed(2)}x. L6 scores compressed.`, 'info');
     }
 
-    // ── ADR deduplication — drop lower-value ADR when both legs qualify ────────
-    // ASMIY is the US ADR for ASML (same underlying). When both score ≥80,
-    // keep whichever has news (or higher score if tied). Drop the other to JS-only.
-    // Config: add future correlated pairs here as [primaryTicker, adrTicker].
-    const ADR_PAIRS = [
-      ['ASML', 'ASMIY'],
-    ];
-
     // Split into Claude-worthy vs JS-only
-    const MAX_CLAUDE_QUALIFIERS = 12; // cost cap — selloff days can push 14+ stocks through
     const allQualified = preScored
       .filter(({ pa, s }) => pa.scores.overall >= CLAUDE_SCORE_THRESHOLD && !ETF_EXCLUSIONS.has(s.ticker))
       .sort((a, b) => b.pa.scores.overall - a.pa.scores.overall); // highest score first
