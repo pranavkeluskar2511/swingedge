@@ -383,6 +383,25 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 /* Earnings warning on result cards */
 .earn-warning{display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:3px;background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.3);margin-left:6px;white-space:nowrap}
 .earn-warning-imminent{background:rgba(217,48,85,.1);color:var(--bear);border:1px solid rgba(217,48,85,.3)}
+/* ── Earnings calendar editable UI ──────────────────────────────────────── */
+.earn-add-btn{font-size:10px;color:var(--accent);background:rgba(13,158,122,.08);border:1px solid rgba(13,158,122,.25);border-radius:4px;padding:2px 9px;cursor:pointer;font-family:var(--mono);font-weight:600;transition:all .15s}
+.earn-add-btn:hover{background:rgba(13,158,122,.15)}
+.earn-form{display:none;padding:10px 18px;border-bottom:1px solid var(--border);background:rgba(13,158,122,.03)}
+.earn-form.open{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.earn-form-group{display:flex;flex-direction:column;gap:4px}
+.earn-form-group label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.earn-form-group input{background:var(--bg);border:1px solid var(--border2);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:12px;padding:5px 8px;outline:none;transition:border-color .2s}
+.earn-form-group input:focus{border-color:var(--accent)}
+.earn-form-save{background:var(--accent);color:#fff;border:none;border-radius:5px;font-family:var(--display);font-size:11px;font-weight:700;padding:6px 14px;cursor:pointer;align-self:flex-end;transition:background .15s}
+.earn-form-save:hover{background:#0bb88e}
+.earn-form-cancel{background:none;border:1px solid var(--border2);border-radius:5px;font-family:var(--mono);font-size:11px;color:var(--muted);padding:5px 10px;cursor:pointer;align-self:flex-end;transition:all .15s}
+.earn-form-cancel:hover{border-color:var(--bear);color:var(--bear)}
+.earn-del-btn{background:none;border:none;cursor:pointer;font-size:11px;color:var(--dim);padding:2px 5px;border-radius:3px;transition:color .15s;font-family:var(--mono)}
+.earn-del-btn:hover{color:var(--bear)}
+.earn-section-label{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);padding:6px 14px 2px;background:var(--surface2);border-bottom:1px solid var(--border)}
+.earn-past{color:var(--dim)!important;text-decoration:line-through;opacity:.5}
+.earn-reset-btn{font-size:9px;color:var(--dim);background:none;border:1px solid var(--border2);border-radius:3px;padding:2px 7px;cursor:pointer;font-family:var(--mono);transition:all .15s;margin-left:4px}
+.earn-reset-btn:hover{color:var(--bear);border-color:var(--bear)}
 /* ── P4A Sector Correlation ──────────────────────────────────────────────── */
 .pos-sector-bar{display:flex;flex-wrap:wrap;gap:4px;padding:6px 18px 10px;border-top:1px solid var(--border)}
 .pos-sector-pill{font-size:9px;font-weight:600;letter-spacing:.04em;padding:2px 8px;border-radius:10px;background:rgba(26,111,204,.07);color:var(--accent2);border:1px solid rgba(26,111,204,.18);white-space:nowrap}
@@ -467,11 +486,26 @@ canvas.spark-inline{display:block;width:120px;height:40px}
         <span id="earnHeaderSub" style="font-size:10px;color:var(--muted)"></span>
       </div>
       <div style="display:flex;align-items:center;gap:8px" onclick="event.stopPropagation()">
-        <span style="font-size:10px;color:var(--dim)">Update weekly · affects scoring</span>
+        <span style="font-size:10px;color:var(--dim)">affects scoring</span>
+        <button class="earn-add-btn" onclick="openEarnForm()">＋ Add</button>
         <span class="earn-chevron" id="earnChevron">▾</span>
       </div>
     </div>
     <div class="earn-panel-body" id="earnPanelBody">
+      <!-- Add/edit form -->
+      <div class="earn-form" id="earnForm">
+        <div class="earn-form-group">
+          <label>Ticker</label>
+          <input id="efTicker" style="width:80px" placeholder="NVDA" maxlength="6" style="text-transform:uppercase">
+        </div>
+        <div class="earn-form-group">
+          <label>Report date</label>
+          <input id="efDate" type="date" style="width:140px">
+        </div>
+        <input type="hidden" id="efEditTicker" value="">
+        <button class="earn-form-save" onclick="saveEarnEntry()">Save</button>
+        <button class="earn-form-cancel" onclick="closeEarnForm()">Cancel</button>
+      </div>
       <div id="earnTableWrap"></div>
     </div>
   </div>
@@ -4540,27 +4574,27 @@ function initPositionTracker() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// P2B EARNINGS CALENDAR
-// Static lookup table — update weekly. Affects pre-score penalty and verdict.
-// Format: 'TICKER': 'YYYY-MM-DD'  (expected report date, before market open)
+// P2B EARNINGS CALENDAR — EDITABLE
+// Seed data is hardcoded below as the default. On first load it is copied
+// to localStorage as 'swingedge_earnings_v1'. All subsequent reads/writes
+// use localStorage — edits from the browser panel persist across sessions.
+// To reset to defaults: click "Reset" in the panel header.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const EARNINGS_CALENDAR = {
-  // ── June / July 2026 earnings — update weekly ──────────────────────────────
-  // Semiconductors & Equipment
-  'AVGO':  '2026-06-12',  // Broadcom — reports after close
+const EARN_KEY = 'swingedge_earnings_v1';
+
+// ── Seed data — default calendar, only used on first load or after reset ──────
+const EARNINGS_SEED = {
+  // ── June / July 2026 earnings ──────────────────────────────────────────────
   'ADBE':  '2026-06-18',
   'ORCL':  '2026-06-24',
   'MU':    '2026-06-25',
-  'NKE':   '2026-06-26',
-  'LEVI':  '2026-07-08',
   'TSM':   '2026-07-17',
   'ASML':  '2026-07-16',
   'ASMIY': '2026-07-16',
   'LRCX':  '2026-07-23',
   'KLAC':  '2026-07-29',
   'AMAT':  '2026-08-14',
-  // AI & Cloud
   'MSFT':  '2026-07-29',
   'META':  '2026-07-29',
   'GOOGL': '2026-07-28',
@@ -4571,31 +4605,24 @@ const EARNINGS_CALENDAR = {
   'PLTR':  '2026-08-04',
   'NOW':   '2026-07-23',
   'CRM':   '2026-08-27',
-  // Networking
   'CRDO':  '2026-08-18',
   'ANET':  '2026-07-29',
   'CSCO':  '2026-08-13',
-  // Analog / Mixed-signal
   'TXN':   '2026-07-22',
   'ADI':   '2026-08-19',
   'MCHP':  '2026-08-06',
   'ON':    '2026-07-28',
   'NXPI':  '2026-07-28',
-  // Memory
   'SNDK':  '2026-07-23',
   'WDC':   '2026-07-30',
   'STX':   '2026-07-22',
-  // Security
   'CRWD':  '2026-08-27',
   'PANW':  '2026-08-19',
-  // Power / Data Center
   'VRT':   '2026-07-23',
   'ETN':   '2026-07-28',
   'GEV':   '2026-07-23',
-  // EDA
   'CDNS':  '2026-07-28',
   'SNPS':  '2026-08-20',
-  // Other qualifiers
   'MTRN':  '2026-08-05',
   'ICHR':  '2026-07-29',
   'VECO':  '2026-08-06',
@@ -4605,51 +4632,137 @@ const EARNINGS_CALENDAR = {
   'ISRG':  '2026-07-23',
 };
 
-// ── Earnings risk scoring constants ───────────────────────────────────────────
+// ── In-memory calendar — loaded from localStorage, falls back to seed ─────────
+let _earningsCalendar = {};
+
+function loadEarningsData() {
+  try {
+    const raw = localStorage.getItem(EARN_KEY);
+    if (raw) {
+      _earningsCalendar = JSON.parse(raw);
+    } else {
+      // First load — copy seed to localStorage
+      _earningsCalendar = { ...EARNINGS_SEED };
+      saveEarningsData();
+    }
+    // Auto-cleanup: remove entries more than 7 days past
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let cleaned = false;
+    Object.entries(_earningsCalendar).forEach(([ticker, dateStr]) => {
+      const d = new Date(dateStr + 'T00:00:00');
+      const daysAgo = Math.round((today - d) / (1000 * 60 * 60 * 24));
+      if (daysAgo > 7) {
+        delete _earningsCalendar[ticker];
+        cleaned = true;
+      }
+    });
+    if (cleaned) saveEarningsData();
+  } catch(e) {
+    _earningsCalendar = { ...EARNINGS_SEED };
+  }
+}
+
+function saveEarningsData() {
+  try { localStorage.setItem(EARN_KEY, JSON.stringify(_earningsCalendar)); } catch(e) {}
+}
+
+function resetEarningsToDefaults() {
+  if (!confirm('Reset earnings calendar to built-in defaults? Your custom entries will be lost.')) return;
+  _earningsCalendar = { ...EARNINGS_SEED };
+  saveEarningsData();
+  renderEarningsPanel();
+}
+
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+function openEarnForm(editTicker) {
+  const form = document.getElementById('earnForm');
+  if (!form) return;
+  form.classList.add('open');
+  const today = new Date();
+  const defaultDate = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,'0')}-${String(today.getDate()).padStart(2,'0')}`;
+  if (editTicker && _earningsCalendar[editTicker]) {
+    document.getElementById('efTicker').value   = editTicker;
+    document.getElementById('efTicker').disabled = true; // can't change ticker on edit
+    document.getElementById('efDate').value     = _earningsCalendar[editTicker];
+    document.getElementById('efEditTicker').value = editTicker;
+  } else {
+    document.getElementById('efTicker').value    = '';
+    document.getElementById('efTicker').disabled = false;
+    document.getElementById('efDate').value      = defaultDate;
+    document.getElementById('efEditTicker').value = '';
+    setTimeout(() => document.getElementById('efTicker').focus(), 50);
+  }
+  const body = document.getElementById('earnPanelBody');
+  if (body) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+function closeEarnForm() {
+  const form = document.getElementById('earnForm');
+  if (form) form.classList.remove('open');
+  document.getElementById('efTicker').disabled = false;
+  const body = document.getElementById('earnPanelBody');
+  if (body) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
+}
+
+function saveEarnEntry() {
+  const ticker    = (document.getElementById('efTicker').value || '').trim().toUpperCase().replace(/[^A-Z]/g,'');
+  const dateStr   = document.getElementById('efDate').value;
+  const editTicker = document.getElementById('efEditTicker').value;
+
+  if (!ticker) { alert('Enter a ticker.'); return; }
+  if (!dateStr) { alert('Select a report date.'); return; }
+
+  // If editing, remove old key first (in case ticker changed — but we disable that)
+  if (editTicker && editTicker !== ticker) delete _earningsCalendar[editTicker];
+
+  _earningsCalendar[ticker] = dateStr;
+  saveEarningsData();
+  closeEarnForm();
+  renderEarningsPanel();
+}
+
+function deleteEarnEntry(ticker) {
+  if (!confirm(`Remove ${ticker} from earnings calendar?`)) return;
+  delete _earningsCalendar[ticker];
+  saveEarningsData();
+  renderEarningsPanel();
+}
+
+// ── Core lookup: returns days until earnings (null if not in calendar) ─────────
 const EARN_IMMINENT_DAYS = 3;  // ≤3 days → force watch, score −15
 const EARN_SOON_DAYS     = 7;  // ≤7 days → score −8, warn in prompt
 const EARN_WATCH_DAYS    = 14; // ≤14 days → show in panel, minor caution
 
-// ── Core lookup: returns days until earnings (null if not in calendar) ────────
 function daysUntilEarnings(ticker) {
-  const dateStr = EARNINGS_CALENDAR[ticker];
+  const dateStr = _earningsCalendar[ticker];
   if (!dateStr) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const earn = new Date(dateStr + 'T00:00:00');
-  const diff = Math.round((earn - today) / (1000 * 60 * 60 * 24));
-  return diff; // negative = already reported
+  return Math.round((earn - today) / (1000 * 60 * 60 * 24));
 }
 
 // ── Apply earnings adjustments to a pre-scored stock ──────────────────────────
-// Called after preAnalyse(). Mutates pa in place, returns earningsInfo object.
 function applyEarningsPenalty(ticker, pa) {
   const days = daysUntilEarnings(ticker);
-  if (days === null || days < 0 || days > EARN_SOON_DAYS) return null; // no near-term risk
+  if (days === null || days < 0 || days > EARN_SOON_DAYS) return null;
 
-  const dateStr = EARNINGS_CALENDAR[ticker];
+  const dateStr = _earningsCalendar[ticker];
   const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 
-  let penalty = 0;
-  let severity = 'soon'; // 'imminent' | 'soon'
-
+  let penalty = 0, severity = 'soon';
   if (days <= EARN_IMMINENT_DAYS) {
-    penalty = 15;
-    severity = 'imminent';
-    // Hard override: cap verdict at watch regardless of score
+    penalty = 15; severity = 'imminent';
     if (pa.verdict === 'buy') pa.verdict = 'watch';
   } else {
     penalty = 8;
-    severity = 'soon';
   }
-
-  // Apply score penalty (floor at 0)
   pa.scores.overall = Math.max(0, pa.scores.overall - penalty);
-
   return { days, label, severity, penalty, dateStr };
 }
 
-// ── Panel toggle ──────────────────────────────────────────────────────────────
+// ── Panel toggle ───────────────────────────────────────────────────────────────
 let _earnPanelOpen = true;
 
 function toggleEarnPanel() {
@@ -4671,92 +4784,115 @@ function toggleEarnPanel() {
   }
 }
 
-// ── Render earnings panel ─────────────────────────────────────────────────────
+// ── Render earnings panel ──────────────────────────────────────────────────────
 function renderEarningsPanel() {
   const wrap = document.getElementById('earnTableWrap');
   const sub  = document.getElementById('earnHeaderSub');
   if (!wrap) return;
 
-  // Find all stocks with earnings in next EARN_WATCH_DAYS days
-  const upcoming = Object.entries(EARNINGS_CALENDAR)
+  const today = new Date(); today.setHours(0,0,0,0);
+
+  // All entries sorted by date
+  const allEntries = Object.entries(_earningsCalendar)
     .map(([ticker, dateStr]) => {
-      const days = daysUntilEarnings(ticker);
+      const d    = new Date(dateStr + 'T00:00:00');
+      const days = Math.round((d - today) / (1000 * 60 * 60 * 24));
       return { ticker, dateStr, days };
     })
-    .filter(x => x.days !== null && x.days >= 0 && x.days <= EARN_WATCH_DAYS)
     .sort((a, b) => a.days - b.days);
 
-  if (sub) sub.textContent = upcoming.length > 0 ? `${upcoming.length} in next ${EARN_WATCH_DAYS}d` : '';
+  const upcoming = allEntries.filter(x => x.days >= 0 && x.days <= EARN_WATCH_DAYS);
+  const future   = allEntries.filter(x => x.days > EARN_WATCH_DAYS);
+  const past     = allEntries.filter(x => x.days < 0).reverse(); // most recent first
 
-  if (upcoming.length === 0) {
-    wrap.innerHTML = `<div class="earn-empty">No earnings in the next ${EARN_WATCH_DAYS} days for tracked universe.</div>`;
-    const body = document.getElementById('earnPanelBody');
-    if (body && _earnPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
-    return;
-  }
+  if (sub) sub.textContent = upcoming.length > 0
+    ? `${upcoming.length} in next ${EARN_WATCH_DAYS}d · ${Object.keys(_earningsCalendar).length} total`
+    : `${Object.keys(_earningsCalendar).length} tracked`;
 
-  const rows = upcoming.map(({ ticker, dateStr, days }) => {
+  const makeRow = ({ ticker, dateStr, days }, isPast) => {
     const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-    let daysClass, badgeClass, badgeLabel, impact;
+    let daysClass = 'earn-days-ok', badgeClass = 'earn-badge-watch', badgeLabel = 'Upcoming', impact = '—';
 
-    if (days <= EARN_IMMINENT_DAYS) {
-      daysClass  = 'earn-days-imminent';
-      badgeClass = 'earn-badge-imminent';
-      badgeLabel = '⚠ Imminent';
-      impact     = `−15 pts · forced watch`;
-    } else if (days <= EARN_SOON_DAYS) {
-      daysClass  = 'earn-days-soon';
-      badgeClass = 'earn-badge-soon';
-      badgeLabel = 'Soon';
-      impact     = `−8 pts`;
-    } else {
-      daysClass  = 'earn-days-ok';
-      badgeClass = 'earn-badge-watch';
-      badgeLabel = 'Upcoming';
-      impact     = `watch`;
+    if (!isPast) {
+      if (days <= EARN_IMMINENT_DAYS) {
+        daysClass = 'earn-days-imminent'; badgeClass = 'earn-badge-imminent';
+        badgeLabel = '⚠ Imminent'; impact = '−15 · forced watch';
+      } else if (days <= EARN_SOON_DAYS) {
+        daysClass = 'earn-days-soon'; badgeClass = 'earn-badge-soon';
+        badgeLabel = 'Soon'; impact = '−8 pts';
+      }
     }
 
-    const daysLabel = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `${days}d`;
+    const daysLabel = isPast
+      ? `${Math.abs(days)}d ago`
+      : days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `${days}d`;
 
-    return `<tr>
+    return `<tr${isPast ? ' style="opacity:.45"' : ''}>
       <td><div class="earn-ticker">${ticker}</div></td>
       <td><div style="font-size:12px">${label}</div></td>
       <td class="td-r"><span class="${daysClass}">${daysLabel}</span></td>
-      <td><span class="earn-badge ${badgeClass}">${badgeLabel}</span></td>
-      <td class="td-r"><span style="font-size:10px;color:var(--dim);font-family:var(--mono)">${impact}</span></td>
+      <td>${isPast ? '<span style="font-size:9px;color:var(--dim)">Reported</span>' : `<span class="earn-badge ${badgeClass}">${badgeLabel}</span>`}</td>
+      <td class="td-r"><span style="font-size:10px;color:var(--dim);font-family:var(--mono)">${isPast ? '' : impact}</span></td>
+      <td style="white-space:nowrap">
+        ${!isPast ? `<button class="earn-del-btn" onclick="openEarnForm('${ticker}')" title="Edit date">✎</button>` : ''}
+        <button class="earn-del-btn" onclick="deleteEarnEntry('${ticker}')" title="Remove">✕</button>
+      </td>
     </tr>`;
-  }).join('');
+  };
 
-  wrap.innerHTML = `
+  let html = '';
+
+  if (upcoming.length > 0) {
+    html += `<div class="earn-section-label">Upcoming — affects scoring</div>
     <table class="earn-table">
-      <thead>
-        <tr>
-          <th>Ticker</th>
-          <th>Reports</th>
-          <th class="th-r">In</th>
-          <th>Risk</th>
-          <th class="th-r">Score Impact</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
+      <thead><tr><th>Ticker</th><th>Reports</th><th class="th-r">In</th><th>Risk</th><th class="th-r">Impact</th><th></th></tr></thead>
+      <tbody>${upcoming.map(e => makeRow(e, false)).join('')}</tbody>
     </table>`;
+  }
+
+  if (future.length > 0) {
+    html += `<div class="earn-section-label">Future — watching</div>
+    <table class="earn-table">
+      <thead><tr><th>Ticker</th><th>Reports</th><th class="th-r">In</th><th></th><th></th><th></th></tr></thead>
+      <tbody>${future.map(e => makeRow(e, false)).join('')}</tbody>
+    </table>`;
+  }
+
+  if (past.length > 0) {
+    html += `<div class="earn-section-label">Recently reported — delete when ready</div>
+    <table class="earn-table">
+      <tbody>${past.map(e => makeRow(e, true)).join('')}</tbody>
+    </table>`;
+  }
+
+  if (!html) {
+    html = `<div class="earn-empty">No earnings tracked. Click <strong>＋ Add</strong> to add a stock.
+      <button class="earn-reset-btn" onclick="resetEarningsToDefaults()">Reset to defaults</button></div>`;
+  } else {
+    html += `<div style="padding:6px 18px 8px;display:flex;justify-content:flex-end">
+      <button class="earn-reset-btn" onclick="resetEarningsToDefaults()">Reset to defaults</button>
+    </div>`;
+  }
+
+  wrap.innerHTML = html;
 
   const body = document.getElementById('earnPanelBody');
   if (body && _earnPanelOpen) setTimeout(() => { body.style.maxHeight = body.scrollHeight + 'px'; }, 50);
 }
 
-// ── Init earnings panel on load ───────────────────────────────────────────────
+// ── Init earnings panel on load ────────────────────────────────────────────────
 function initEarningsPanel() {
+  loadEarningsData();
   renderEarningsPanel();
   const body = document.getElementById('earnPanelBody');
   if (body) body.style.maxHeight = body.scrollHeight + 'px';
 }
 
-// ── Earnings badge HTML for result cards ──────────────────────────────────────
+// ── Earnings badge HTML for result cards ───────────────────────────────────────
 function earningsBadgeHtml(ticker) {
   const days = daysUntilEarnings(ticker);
   if (days === null || days < 0 || days > EARN_WATCH_DAYS) return '';
-  const dateStr = EARNINGS_CALENDAR[ticker];
+  const dateStr = _earningsCalendar[ticker];
   const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const isImminent = days <= EARN_IMMINENT_DAYS;
   const cls = isImminent ? 'earn-warning earn-warning-imminent' : 'earn-warning';
@@ -4764,15 +4900,13 @@ function earningsBadgeHtml(ticker) {
   return `<span class="${cls}">📅 Earnings ${label} (${daysLabel})</span>`;
 }
 
-// ── Earnings string for Claude prompt ─────────────────────────────────────────
+// ── Earnings string for Claude prompt ──────────────────────────────────────────
 function earningsPromptStr(ticker) {
   const days = daysUntilEarnings(ticker);
   if (days === null || days < 0 || days > EARN_SOON_DAYS) return '';
-  const dateStr = EARNINGS_CALENDAR[ticker];
+  const dateStr = _earningsCalendar[ticker];
   const label = new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  if (days <= EARN_IMMINENT_DAYS) {
-    return ` ⚠EARNINGS_IN_${days}D(${label})_FORCED_WATCH`;
-  }
+  if (days <= EARN_IMMINENT_DAYS) return ` ⚠EARNINGS_IN_${days}D(${label})_FORCED_WATCH`;
   return ` EARNINGS_IN_${days}D(${label})_CAUTION`;
 }
 
