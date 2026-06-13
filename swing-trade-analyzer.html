@@ -162,6 +162,8 @@ header{display:flex;align-items:flex-end;justify-content:space-between;margin-bo
 .verdict-buy{background:rgba(13,158,122,.12);color:#0a7a5c;border:1px solid rgba(13,158,122,.3)}
 .verdict-watch{background:rgba(201,122,10,.1);color:#9a5e08;border:1px solid rgba(201,122,10,.25)}
 .verdict-avoid{background:rgba(217,48,85,.1);color:#a82040;border:1px solid rgba(217,48,85,.25)}
+.verdict-short{background:rgba(217,48,85,.15);color:#b0253f;border:1px solid rgba(217,48,85,.4);font-weight:800}
+.verdict-watch-short{background:rgba(217,48,85,.07);color:#c03050;border:1px solid rgba(217,48,85,.2)}
 .t-price{font-family:var(--display);font-size:14px;font-weight:700}
 .pv-current{color:var(--text)}
 .pv-entry{color:var(--accent2)}
@@ -2530,6 +2532,230 @@ function preAnalyse(s, holdPeriod, minRR) {
 
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// P5A SHORT SIDE SCORING ENGINE
+// Mirror of preAnalyse() with inverted criteria.
+// Identifies distribution/breakdown setups for short swing trades.
+// Short = RSI 55–75 (overbought entering short), breakdown from base,
+//         price below key MAs, OBV distribution, gap-up then reversal.
+// Returns null if not a viable short candidate.
+// ═══════════════════════════════════════════════════════════════════════════
+
+function preAnalyseShort(s, holdPeriod, minRR) {
+  const atr = s.atr14 || 0;
+  const p   = s.price  || 0;
+  if (!p || !atr) return null;
+
+  // Hold-period multipliers (same as long side)
+  const hp = {
+    short:  { stopMult: 1.25, tgtMultLow: 1.5,  tgtMultHigh: 2.0  },
+    medium: { stopMult: 1.75, tgtMultLow: 3.0,  tgtMultHigh: 5.0  },
+    long:   { stopMult: 2.25, tgtMultLow: 6.0,  tgtMultHigh: 10.0 },
+  }[holdPeriod] || { stopMult: 1.75, tgtMultLow: 3.0, tgtMultHigh: 5.0 };
+
+  const rsi = s.rsi14;
+
+  // ── Hard disqualifiers — never short these ────────────────────────────────
+  // RSI < 30: already washed out, risk of violent short-squeeze
+  if (rsi != null && rsi < 30) return null;
+  // Uptrend with price well above both MAs: structure not broken
+  if (s.trend === 'strong uptrend' && (!s.ma50 || p > s.ma50 * 1.05)) return null;
+  // ATR extremes (same as long side)
+  if (p > 0 && (atr / p * 100) > 12) return null; // too volatile
+  if (p > 0 && (atr / p * 100) < 1.0) return null; // too tight
+
+  // ── L1S: Setup quality for short (0–100) ────────────────────────────────
+  // Want: breakdown, downtrend, price below MAs, near 52w high (room to fall)
+  let l1s = 40; // shorts start at lower base — harder to call cleanly
+
+  if (s.trend === 'downtrend')       l1s += 25;
+  else if (s.trend === 'mixed')      l1s += 5;
+  else if (s.trend === 'uptrend')    l1s -= 15; // still possible but harder
+  else if (s.trend === 'strong uptrend') l1s -= 30;
+
+  if (s.ma50  && p < s.ma50)  l1s += 10; // below 50MA — bearish structure
+  else if (s.ma50)             l1s -=  8;
+  if (s.ma200 && p < s.ma200) l1s +=  8; // below 200MA — confirmed downtrend
+  else if (s.ma200)            l1s -=  5;
+
+  // Near 52w high = more room to fall = better short
+  if (s.wk52Hi && s.wk52Lo) {
+    const rangePct = (p - s.wk52Lo) / (s.wk52Hi - s.wk52Lo);
+    if (rangePct > 0.80) l1s += 12; // near 52w high — extended, ripe for reversal
+    else if (rangePct > 0.60) l1s += 5;
+    else if (rangePct < 0.30) l1s -= 10; // near 52w low — dangerous short
+  }
+  l1s = clamp(l1s, 0, 100);
+
+  // ── L2S: Technical confirmation for short (0–100) ───────────────────────
+  // Want: RSI 55–75 (overbought but not yet washed), MACD bearish cross,
+  //       distribution OBV, gap-up then fully faded (fade=200%), high volRatio on down days
+  let l2s = 45;
+
+  // RSI zone — ideal for short entry: overbought but not extreme
+  if (rsi != null) {
+    if      (rsi >= 70 && rsi < 80) l2s += 20; // ideal short RSI zone
+    else if (rsi >= 65 && rsi < 70) l2s += 10; // acceptable
+    else if (rsi >= 55 && rsi < 65) l2s +=  5; // mild overextension
+    else if (rsi >= 80)             l2s -=  5; // extreme — short-squeeze risk
+    else if (rsi < 55)              l2s -= 15; // not overbought enough for short entry
+  }
+
+  // MACD — want bearish (negative histogram = momentum turning down)
+  if (s.macd != null) {
+    if (s.macd < 0) l2s += 12; // bearish momentum
+    else            l2s -= 10; // bullish momentum — bad short signal
+  }
+
+  // Volume — distribution OBV (negative = institutional selling)
+  if (s.volAccumScore != null) {
+    if      (s.volAccumScore <= -2) l2s += 15; // strong distribution — best short signal
+    else if (s.volAccumScore <= -1) l2s +=  8; // mild distribution
+    else if (s.volAccumScore >= 2)  l2s -= 15; // strong accumulation — don't short
+    else if (s.volAccumScore >= 1)  l2s -=  8;
+  }
+
+  // Intraday fade — gap up then sold off completely is the best short signal
+  if (s.intradayFade != null) {
+    if      (s.intradayFade >= 1.5) l2s += 20; // gap up, reversed below open — distribution
+    else if (s.intradayFade >= 0.8) l2s += 10; // gap up, most given back
+    else if (s.intradayFade <= 0.2) l2s -=  8; // holding gains — bad short
+  }
+
+  // Gap-up on low volume = weak conviction bounce = potential short entry
+  if (s._volGapFlag === 'lowVolGap')    l2s += 8;  // gap-up without volume — suspect
+  if (s._volGapFlag === 'highVolAbsorb') l2s -= 10; // gap-down absorbed = buyers present
+  if (s._volGapFlag === 'highVolGap')   l2s -= 8;  // confirmed gap-up = bad short
+
+  // P4B structure zone — breakout is BAD for shorts, prior resistance overhead is GOOD
+  if (s.structureZone === 'breakout')          l2s -= 15; // breaking out = not a short
+  if (s.structureZone === 'consolidation_base') l2s -=  5; // base building = not a short yet
+  if (s.structureZone === 'air')               l2s +=  5; // no support = room to fall
+
+  l2s = clamp(l2s, 0, 100);
+
+  // ── L3S: Fundamental context (same scoring, no change) ──────────────────
+  let l3s = 55;
+  if (s.marketCap) {
+    const mc = parseFloat(s.marketCap);
+    if      (mc > 100) l3s += 5;  // mega-cap shorts are harder (buybacks, index support)
+    else if (mc > 10)  l3s += 8;  // large-cap — good liquidity for short
+    else if (mc < 1)   l3s -= 10; // micro-cap — hard to borrow, volatile
+  }
+  l3s = clamp(l3s, 0, 100);
+
+  // ── L4S: Risk parameters for short ──────────────────────────────────────
+  let l4s = 50;
+  if (p > 0) {
+    const atrPct = (atr / p) * 100;
+    if      (atrPct >= 1.5 && atrPct <= 5)  l4s += 25;
+    else if (atrPct >= 1.0 && atrPct < 1.5) l4s -=  5;
+    else if (atrPct >= 0.5 && atrPct < 1.0) l4s -= 20;
+    else if (atrPct < 0.5)                  l4s -= 35;
+    else if (atrPct > 5   && atrPct <= 10)  l4s +=  0;
+    else if (atrPct > 10)                   l4s -= 15;
+  }
+  // Resistance overhead = cushion for stop (stop goes above entry for shorts)
+  if (s.priorResistance && p > 0) {
+    const resPct = (s.priorResistance - p) / p * 100;
+    if (resPct >= 0 && resPct <= 5) l4s += 12; // resistance tight overhead — clean stop
+    else if (resPct > 5 && resPct <= 10) l4s += 5;
+    else if (resPct < 0) l4s -= 8; // already above prior resistance — dangerous short
+  }
+  l4s = clamp(l4s, 0, 100);
+
+  // ── Short entry / stop / target ──────────────────────────────────────────
+  // Entry: current price (short at market or limit)
+  const entry = p;
+
+  // Stop: entry PLUS stopMult × ATR (stop is above entry for shorts)
+  // If prior resistance is tighter, use that as stop anchor
+  let stop = +(entry + hp.stopMult * atr).toFixed(2);
+  if (s.priorResistance && s.priorResistance > entry && s.priorResistance < stop) {
+    stop = +(s.priorResistance + atr * 0.25).toFixed(2); // just above resistance
+  }
+  const stopDist = stop - entry;
+  if (stopDist <= 0) return null;
+
+  // Target: below entry — prefer prior support, then 52w low, then ATR multiples
+  let target = null;
+  let targetBasis = '';
+
+  if (s.priorSupport && s.priorSupport < entry) {
+    const rrFromSupport = (entry - s.priorSupport) / stopDist;
+    if (rrFromSupport >= minRR) {
+      target = +(s.priorSupport * 1.005).toFixed(2); // just above support
+      targetBasis = `prior support $${s.priorSupport}`;
+    }
+  }
+  if (!target && s.wk52Lo && s.wk52Lo < entry) {
+    const rrFrom52Lo = (entry - s.wk52Lo) / stopDist;
+    if (rrFrom52Lo >= minRR) {
+      target = +(s.wk52Lo * 1.01).toFixed(2);
+      targetBasis = `52w low $${s.wk52Lo}`;
+    }
+  }
+  if (!target) {
+    const mult = (hp.tgtMultLow + hp.tgtMultHigh) / 2;
+    target = +(entry - stopDist * Math.max(minRR, mult / hp.stopMult)).toFixed(2);
+    targetBasis = `ATR extension ×${(Math.max(minRR, mult / hp.stopMult)).toFixed(1)}`;
+  }
+
+  const actualRR = +((entry - target) / stopDist).toFixed(2);
+  const downside  = `-${((entry - target) / entry * 100).toFixed(1)}%`;
+  const stopPct   = `+${((stop - entry) / entry * 100).toFixed(1)}%`;
+
+  // ── L5S: Entry/exit plan for short ──────────────────────────────────────
+  let l5s = 50;
+  if (actualRR >= 3)          l5s += 30;
+  else if (actualRR >= minRR) l5s += 20;
+  else if (actualRR < minRR)  l5s -= 20;
+  if (targetBasis.includes('support') || targetBasis.includes('52w')) l5s += 15;
+  l5s = clamp(l5s, 0, 100);
+
+  // ── L6S: Relative weakness vs SMH (inverted — want to SHORT the laggard) ─
+  let l6s = 50;
+  const benchmarkRSI = (typeof window._smhRSI === 'number') ? window._smhRSI : null;
+  if (benchmarkRSI !== null && rsi !== null) {
+    const relStrength = rsi - benchmarkRSI; // NEGATIVE = lagging sector = better short
+    if      (relStrength <= -10) l6s += 25; // significant underperformer — prime short
+    else if (relStrength <= -5)  l6s += 15;
+    else if (relStrength <= 0)   l6s +=  5;
+    else if (relStrength <= 5)   l6s -=  5;
+    else if (relStrength <= 10)  l6s -= 15;
+    else                          l6s -= 25; // outperformer — don't short leaders
+  }
+  l6s = clamp(l6s, 0, 100);
+
+  // ── Overall short score ──────────────────────────────────────────────────
+  const shortScore = Math.round(
+    l1s * 0.24 + l2s * 0.29 + l3s * 0.14 + l4s * 0.14 + l5s * 0.14 + l6s * 0.05
+  );
+
+  // ── Short verdict ────────────────────────────────────────────────────────
+  let verdict = 'avoid';
+  if      (shortScore >= 72 && actualRR >= minRR) verdict = 'short';
+  else if (shortScore >= 45 || actualRR >= minRR) verdict = 'watch_short';
+
+  // ── Hard overrides ───────────────────────────────────────────────────────
+  if (rsi != null && rsi < 40 && verdict === 'short') verdict = 'watch_short'; // not overbought enough
+  if (s.trend === 'strong uptrend' && verdict === 'short') verdict = 'watch_short';
+  if (s.wTrend === 'up' && verdict === 'short') verdict = 'watch_short'; // weekly uptrend = short risk
+
+  return {
+    entry, stop, target, targetBasis,
+    stopDist, actualRR,
+    upside: downside,   // reuse field name — means "potential downside" for shorts
+    stopPct,
+    isShort: true,
+    scores: {
+      setup: l1s, technical: l2s, fundamental: l3s,
+      risk: l4s, plan: l5s, relStrength: l6s, overall: shortScore
+    },
+    verdict
+  };
+}
+
 // ── Generate all 5 layer notes from Polygon data (no Claude needed) ───────────
 // Each note is a short factual description of why the layer scored what it did.
 // Completely free — zero tokens. Claude only writes the 3 trade sentences.
@@ -2909,6 +3135,25 @@ async function runAnalysis() {
     // P3A: Exit signal evaluation — preScored + earnings penalties now applied
     evaluateExitSignals(stockData, preScored);
 
+    // P5A: Short side scoring — run on all stocks, separate from long pipeline
+    const SHORT_SCORE_THRESHOLD = 72;
+    const shortScored = stockData
+      .filter(s => !ETF_EXCLUSIONS.has(s.ticker)) // exclude ETFs from shorts too
+      .map(s => ({ s, pa: preAnalyseShort(s, holdPeriod, minRRnum) }))
+      .filter(({ pa }) => pa !== null && (pa.verdict === 'short' || pa.verdict === 'watch_short'))
+      .sort((a, b) => b.pa.scores.overall - a.pa.scores.overall)
+      .slice(0, 6); // cap at 6 short candidates — cost control
+
+    if (shortScored.length > 0) {
+      const shortDiag = shortScored.map(({ s, pa }) => {
+        const relD = (window._smhRSI != null && s.rsi14 != null)
+          ? (s.rsi14 - window._smhRSI > 0 ? '+' : '') + (s.rsi14 - window._smhRSI).toFixed(1)
+          : 'n/a';
+        return `${s.ticker}(score=${pa.scores.overall} RSI=${s.rsi14} Δ=${relD} verdict=${pa.verdict})`;
+      }).join(' · ');
+      dbg(`◈ Short candidates: ${shortDiag}`, 'info');
+    }
+
     // ── ETF exclusion — never send benchmark ETFs to Claude ──────────────────
     // SMH/SOXX/BOTZ are in the universe for L6 benchmark purposes only.
     // They can score ≥80 on calm days — exclude them from qualifying.
@@ -3032,6 +3277,14 @@ async function runAnalysis() {
       dbg(`JS-only results built instantly: ${jsOnly.map(x=>x.s.ticker).join(', ')}`, 'ok');
       renderStreamingResults(allResults, 0, Math.ceil(forClaude.length / BATCH_SIZE) || 1);
     }
+
+    // P5A: Build short candidate results (JS-only — no Claude for shorts currently)
+    // Shorts that already qualified for long-side Claude are skipped to avoid double-billing
+    const longTickers = new Set([...forClaude, ...jsOnly].map(x => x.s.ticker));
+    shortScored.forEach(({ s, pa }) => {
+      if (longTickers.has(s.ticker)) return; // already has a long-side card
+      allResults.push(buildResult(s, pa, { entryNote:'', exitNote:'', stopNote:'' }));
+    });
 
     // ── Phase 2.5: Polygon news fetch — qualifying stocks only ──────────────
     // Fetch last 48h headlines for each qualifying stock concurrently.
@@ -3287,6 +3540,7 @@ function buildSignalSummary(results) {
   const gapRips   = [];  // gap up ≥ +1% + RSI elevated (>70) — chasing risk
   const avoids    = [];  // gap down + RSI elevated (>70) — double negative
   const momentum  = [];  // gap up ≥ +1% + RSI healthy — clean momentum
+  const shorts    = [];  // P5A: short candidates
 
   results.forEach(r => {
     const live = r._live || {};
@@ -3352,6 +3606,14 @@ function buildSignalSummary(results) {
         : `Mild gap up, RSI healthy — constructive`;
       momentum.push(row);
     }
+
+    // P5A: Short candidates — separate classification
+    if (verdict === 'short' || verdict === 'watch_short') {
+      row.read = verdict === 'short'
+        ? `Score ${r.overallScore} · RSI ${rsi} overbought · distribution signal`
+        : `Watch short — RSI ${rsi} · setup developing`;
+      shorts.push(row);
+    }
   });
 
   // Sort each group by relevance
@@ -3361,7 +3623,9 @@ function buildSignalSummary(results) {
   gapRips.sort((a,b)    => b.gap - a.gap);    // biggest gap first
   momentum.sort((a,b)   => b.score - a.score);// highest score first
 
-  if (!dipBuys.length && !avoids.length && !gapRips.length && !momentum.length) {
+  shorts.sort((a,b)     => b.score - a.score);  // highest short score first
+
+  if (!dipBuys.length && !avoids.length && !gapRips.length && !momentum.length && !shorts.length) {
     el.style.display = 'none';
     return;
   }
@@ -3371,8 +3635,8 @@ function buildSignalSummary(results) {
       const gapColor = r.gap >= 0 ? 'var(--bull)' : 'var(--bear)';
       const gapStr   = (r.gap >= 0 ? '+' : '') + r.gap.toFixed(2) + '%';
       const rsiColor = r.rsi > 80 ? 'var(--bear)' : r.rsi > 70 ? 'var(--warn)' : r.rsi < 40 ? 'var(--muted)' : 'var(--bull)';
-      const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
-      const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+      const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':r.verdict==='short'?'verdict-short':r.verdict==='watch_short'?'verdict-watch-short':'verdict-avoid';
+      const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':r.verdict==='short'?'▼ SHORT':r.verdict==='watch_short'?'▽ WATCH SHORT':'▽ AVOID';
       return `<tr>
         <td><strong style="font-family:var(--display)">${r.ticker}</strong></td>
         <td style="color:${gapColor};font-weight:600">${gapStr}</td>
@@ -3385,7 +3649,7 @@ function buildSignalSummary(results) {
 
   // Persistent open/close state across re-renders — keyed by section id
   // Default: Buy-the-dip and Clean setup open, others closed
-  const SIG_DEFAULTS = { dip: true, clean: true, momentum: false, avoid: false, chase: false };
+  const SIG_DEFAULTS = { dip: true, clean: true, momentum: false, avoid: false, chase: false, shorts: false };
   if (!window._sigState) window._sigState = { ...SIG_DEFAULTS };
 
   function section(id, title, icon, rows, borderColor) {
@@ -3425,12 +3689,13 @@ function buildSignalSummary(results) {
     ${section('momentum', 'Momentum — clean gap up',         '↑', momentum,   'var(--accent)')}
     ${section('avoid',    'Avoid — gap down + overbought',   '⚠', avoids,     'var(--bear)')}
     ${section('chase',    "Don't chase — gap up + stretched",'🔥',gapRips,    'var(--warn)')}
+    ${section('shorts',   'Short candidates — distribution', '▼', shorts,     'var(--bear)')}
   `;
 
   // After render, set real scrollHeight-based maxHeight for open sections
   // so the CSS transition has an accurate target
   requestAnimationFrame(() => {
-    ['dip','clean','momentum','avoid','chase'].forEach(id => {
+    ['dip','clean','momentum','avoid','chase','shorts'].forEach(id => {
       const body = document.getElementById(`sig-body-${id}`);
       if (body && window._sigState[id]) {
         body.style.maxHeight = body.scrollHeight + 'px';
@@ -3609,8 +3874,8 @@ function renderStreamingResults(partialResults, batchDone, totalBatches) {
   // Compact interim rows
   let rows = sorted.map(r => {
     const live = r._live || {};
-    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
-    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':r.verdict==='short'?'verdict-short':r.verdict==='watch_short'?'verdict-watch-short':'verdict-avoid';
+    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':r.verdict==='short'?'▼ SHORT':r.verdict==='watch_short'?'▽ WATCH SHORT':'▽ AVOID';
     const rrNum = parseFloat(r.rr||0);
     const rrColor = rrNum>=2.5?'var(--bull)':rrNum>=1.5?'var(--warn)':'var(--bear)';
     const chgColor = (live.changePct||0)>=0?'var(--bull)':'var(--bear)';
@@ -3728,8 +3993,8 @@ function renderResults(results) {
   let tableRows = '';
   results.forEach((r,i) => {
     const live = r._live || {};
-    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
-    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const vc = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':r.verdict==='short'?'verdict-short':r.verdict==='watch_short'?'verdict-watch-short':'verdict-avoid';
+    const vl = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':r.verdict==='short'?'▼ SHORT':r.verdict==='watch_short'?'▽ WATCH SHORT':'▽ AVOID';
     const isLive    = live.priceIsLive;
     const isClose   = live.priceIsClose;
     const chgColor  = (live.changePct||0) >= 0 ? 'var(--bull)' : 'var(--bear)';
@@ -3820,8 +4085,8 @@ function renderResults(results) {
   let analysisCards = '';
   results.forEach((r,i) => {
     const live = r._live || {};
-    const vc   = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':'verdict-avoid';
-    const vl   = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':'▽ AVOID';
+    const vc   = r.verdict==='buy'?'verdict-buy':r.verdict==='watch'?'verdict-watch':r.verdict==='short'?'verdict-short':r.verdict==='watch_short'?'verdict-watch-short':'verdict-avoid';
+    const vl   = r.verdict==='buy'?'▲ BUY':r.verdict==='watch'?'◈ WATCH':r.verdict==='short'?'▼ SHORT':r.verdict==='watch_short'?'▽ WATCH SHORT':'▽ AVOID';
     const isLive    = live.priceIsLive;
     const chgColor  = (live.changePct||0) >= 0 ? 'var(--bull)' : 'var(--bear)';
     const chgSign   = (live.changePct||0) >= 0 ? '+' : '';
@@ -4080,7 +4345,7 @@ function exportData(format) {
     return [
       r.ticker,
       r.companyName || '',
-      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : 'AVOID',
+      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : r.verdict === 'short' ? 'SHORT' : r.verdict === 'watch_short' ? 'WATCH_SHORT' : 'AVOID',
       r.overallScore || '',
       r.rr || '',
       r.currentPrice || '',
@@ -4121,7 +4386,7 @@ function exportData(format) {
     return [
       r.ticker,
       r.companyName || '',
-      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : 'AVOID',
+      r.verdict === 'buy' ? 'BUY' : r.verdict === 'watch' ? 'WATCH' : r.verdict === 'short' ? 'SHORT' : r.verdict === 'watch_short' ? 'WATCH_SHORT' : 'AVOID',
       r.overallScore || '',
       r.rr || '',
       r.currentPrice || '',
