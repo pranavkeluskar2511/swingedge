@@ -1830,20 +1830,23 @@ async function fetchTickerData(ticker) {
   const from365 = nDaysAgo(380);
   dbg(`${ticker}: fetching bars ${from90} → ${today}`);
 
-  const [barsRes, snapRes, detailsRes, extRes] = await Promise.allSettled([
+  const [barsRes, snapRes, detailsRes, extRes, wkBarsRes] = await Promise.allSettled([
     polyGet(`/v2/aggs/ticker/${ticker}/range/1/day/${from90}/${today}?adjusted=true&sort=asc&limit=120`),
     polyGet(`/v2/snapshot/locale/us/markets/stocks/tickers/${ticker}`),
     polyGet(`/v3/reference/tickers/${ticker}`),
     // Extended hours: 1-minute bars for today covering pre+post market
     // from=today 4:00am, to=today 9:30am for pre-market
     // Polygon free tier returns whatever is available
-    polyGet(`/v2/aggs/ticker/${ticker}/range/1/minute/${localDateStr(new Date())}/${localDateStr(new Date())}?adjusted=true&sort=asc&limit=300&extended_hours=true`)
+    polyGet(`/v2/aggs/ticker/${ticker}/range/1/minute/${localDateStr(new Date())}/${localDateStr(new Date())}?adjusted=true&sort=asc&limit=300&extended_hours=true`),
+    // P3B: Weekly bars — 52 weeks for weekly RSI(14) + 10-week MA
+    polyGet(`/v2/aggs/ticker/${ticker}/range/1/week/${from365}/${today}?adjusted=true&sort=asc&limit=60`)
   ]);
 
   const bars    = barsRes.status    === 'fulfilled' ? (barsRes.value.results    || []) : [];
   const snap    = snapRes.status    === 'fulfilled' ?  snapRes.value.ticker          : null;
   const details = detailsRes.status === 'fulfilled' ?  detailsRes.value.results      : null;
   const extBars = extRes.status     === 'fulfilled' ? (extRes.value.results          || []) : [];
+  const wkBars  = wkBarsRes.status  === 'fulfilled' ? (wkBarsRes.value.results       || []) : [];
 
   if (bars.length === 0) {
     dbg(`${ticker}: ⚠ zero bars returned — barsRes status=${barsRes.status}, error=${barsRes.reason||'none'}`, 'error');
@@ -1979,6 +1982,20 @@ async function fetchTickerData(ticker) {
   const ma200 = sma(closesLong, 200);   // needs 365-day data
   const atr14 = calcATR(closedBars);
 
+  // P3B: Weekly indicators — RSI(14), 10-week MA, weekly trend
+  // Need at least 15 weekly bars for RSI (14 periods + 1 seed)
+  const wkCloses = wkBars.map(b => b.c);
+  const wRsi   = wkCloses.length >= 15 ? calcRSI(wkCloses) : null;
+  const wMa10  = wkCloses.length >= 10 ? sma(wkCloses, 10) : null;
+  // Weekly trend: compare current price to 10-week MA (1% tolerance = flat)
+  let wTrend = null;
+  if (wMa10 && price) {
+    const wDiff = (price - wMa10) / wMa10 * 100;
+    if      (wDiff >  1) wTrend = 'up';
+    else if (wDiff < -1) wTrend = 'down';
+    else                 wTrend = 'flat';
+  }
+
   // 52-week range — use completed year bars (exclude today's partial bar)
   const wk52Hi = closedYearBars.length ? +Math.max(...closedYearBars.map(b => b.h)).toFixed(2) : null;
   const wk52Lo = closedYearBars.length ? +Math.min(...closedYearBars.map(b => b.l)).toFixed(2) : null;
@@ -2078,6 +2095,7 @@ async function fetchTickerData(ticker) {
     postMktHigh, postMktLow,
     volume, avgVol20, volRatio,
     rsi14, macd, ma20, ma50, ma200, atr14,
+    wRsi, wMa10, wTrend,             // P3B: weekly indicators
     wk52Hi, wk52Lo, trend,
     priorResistance, priorSupport, consHigh, consLow, consRange, swingHi60, swingLo60,
     closes: closes.slice(-30), sparkBars,
@@ -2322,16 +2340,50 @@ function preAnalyse(s, holdPeriod, minRR) {
     l6 * 0.05   // relative strength   (NEW)
   );
 
+  // ── P3B: Weekly trend gate ───────────────────────────────────────────────
+  // Applies score penalties and verdict overrides based on weekly chart context.
+  // Weekly data may be null for tickers with insufficient history — gate skipped.
+  let weeklyPenalty = 0;
+  let weeklyOverride = null; // 'watch' forces verdict cap
+  let weeklyNote = null;
+
+  if (s.wTrend !== null) {
+    if (s.wTrend === 'down') {
+      weeklyPenalty   = 10;
+      weeklyOverride  = 'watch'; // never buy into a weekly downtrend
+      weeklyNote      = `W-trend: down (below 10wkMA $${s.wMa10?.toFixed(2)})`;
+    } else if (s.wTrend === 'flat') {
+      weeklyPenalty   = 3;
+      weeklyNote      = `W-trend: flat (near 10wkMA $${s.wMa10?.toFixed(2)})`;
+    } else {
+      weeklyNote      = `W-trend: up (10wkMA $${s.wMa10?.toFixed(2)})`;
+    }
+  }
+  if (s.wRsi !== null) {
+    if (s.wRsi > 75) {
+      weeklyPenalty  += 8;
+      weeklyNote      = (weeklyNote || '') + ` · W-RSI ${s.wRsi} overbought`;
+    } else if (s.wRsi < 30) {
+      weeklyPenalty  += 5;
+      weeklyNote      = (weeklyNote || '') + ` · W-RSI ${s.wRsi} oversold (value trap risk)`;
+    } else {
+      weeklyNote      = (weeklyNote || '') + ` · W-RSI ${s.wRsi}`;
+    }
+  }
+
+  // Apply weekly penalty to overall score (floor 0)
+  const overallScoreGated = Math.max(0, overallScore - weeklyPenalty);
+
   // ── Verdict ─────────────────────────────────────────────────────────────
   // Thresholds aligned with Claude filter (≥80 = Claude, ≥75 = Buy, 45-74 = Watch)
   let verdict = 'avoid';
-  if      (overallScore >= 75 && actualRR >= minRR) verdict = 'buy';   // high conviction
-  else if (overallScore >= 45 || actualRR >= minRR) verdict = 'watch'; // monitor
+  if      (overallScoreGated >= 75 && actualRR >= minRR) verdict = 'buy';   // high conviction
+  else if (overallScoreGated >= 45 || actualRR >= minRR) verdict = 'watch'; // monitor
 
   // ── Hard overrides — these trump the score regardless ───────────────────
   if (rsi != null) {
     if (rsi > 80 && verdict === 'buy')   verdict = 'watch'; // RSI >80: cap at watch
-    if (rsi > 80 && overallScore < 55)   verdict = 'avoid'; // RSI >80 + weak: avoid
+    if (rsi > 80 && overallScoreGated < 55)   verdict = 'avoid'; // RSI >80 + weak: avoid
     if (rsi > 75 && verdict === 'buy')   verdict = 'watch'; // RSI 75-80: cap at watch
   }
   if (p > 0 && atr > 0) {
@@ -2340,6 +2392,8 @@ function preAnalyse(s, holdPeriod, minRR) {
     if (atrPct < 1.0 && verdict === 'buy') verdict = 'watch'; // too tight <1%: not a swing trade
   }
   if (s.trend === 'downtrend' && verdict === 'buy') verdict = 'watch';
+  // P3B: Weekly downtrend override — cap at watch
+  if (weeklyOverride === 'watch' && verdict === 'buy') verdict = 'watch';
 
   return {
     entry, stop, target, targetBasis,
@@ -2347,7 +2401,8 @@ function preAnalyse(s, holdPeriod, minRR) {
     rrIsChartAnchored: targetBasis.includes('resistance') || targetBasis.includes('swing') || targetBasis.includes('52w') || targetBasis.includes('measured'),
     scores: {
       setup: l1, technical: l2, fundamental: l3,
-      risk: l4, plan: l5, relStrength: l6, overall: overallScore
+      risk: l4, plan: l5, relStrength: l6, overall: overallScoreGated,
+      weeklyPenalty, weeklyNote   // P3B: expose for debug log and card display
     },
     verdict
   };
@@ -2466,6 +2521,16 @@ function generateNotes(s, pa) {
     }
   }
 
+  // P3B: Weekly context note
+  let weeklyContext = '';
+  if (s.wRsi != null || s.wTrend != null) {
+    const wTrendLabel = { up: 'Weekly uptrend', down: 'Weekly downtrend ⚠', flat: 'Weekly sideways' }[s.wTrend] || '';
+    const wMaStr = s.wMa10 ? ` · 10wkMA $${s.wMa10.toFixed(2)}` : '';
+    const wRsiStr = s.wRsi != null ? ` · W-RSI ${s.wRsi}` : '';
+    const penaltyStr = pa.scores.weeklyPenalty > 0 ? ` · score −${pa.scores.weeklyPenalty}` : '';
+    weeklyContext = `${wTrendLabel}${wMaStr}${wRsiStr}${penaltyStr}`;
+  }
+
   return {
     setup:       l1note,
     technical:   l2note,
@@ -2473,6 +2538,7 @@ function generateNotes(s, pa) {
     risk:        l4note,
     plan:        l5note,
     relStrength: l6note,
+    weeklyContext,
   };
 }
 
@@ -2494,7 +2560,10 @@ function buildPrompt(stocks, holdPeriod, riskPct, minRR, regime, newsMap = new M
     const volStr  = (s.volAccumScore != null && s.volAccumScore !== 0)
       ? ` volAccum=${s.volAccumScore > 0 ? '+' : ''}${s.volAccumScore}`
       : '';
-    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${earningsPromptStr(s.ticker)}`;
+    const weeklyStr = (s.wRsi != null || s.wTrend != null)
+      ? ` W-RSI=${s.wRsi??'?'} W-trend=${s.wTrend??'?'}`
+      : '';
+    const dataLine = `${s.ticker} | ${s.companyName} | verdict=${pa.verdict} | entry=$${pa.entry} target=$${pa.target}(${pa.upside}) stop=$${pa.stop}(${pa.stopPct}) | RSI=${s.rsi14??'?'} trend=${s.trend} resist=$${s.priorResistance??'?'} support=$${s.priorSupport??'?'}${fadeStr}${relStr}${volStr}${weeklyStr}${earningsPromptStr(s.ticker)}`;
 
     // ── Per-stock news block ──────────────────────────────────────────────────
     // Inject up to 3 recent Polygon headlines directly below each stock's data.
@@ -2786,7 +2855,10 @@ async function runAnalysis() {
         const relD = (window._smhRSI != null && s.rsi14 != null)
           ? (s.rsi14 - window._smhRSI > 0 ? '+' : '') + (s.rsi14 - window._smhRSI).toFixed(1)
           : 'n/a';
-        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD})`;
+        const wkStr = s.wRsi != null
+          ? ` W-RSI=${s.wRsi} W=${s.wTrend||'?'}${pa.scores.weeklyPenalty > 0 ? ` −${pa.scores.weeklyPenalty}` : ''}`
+          : '';
+        return `${s.ticker}(score=${pa.scores.overall} vol=${vol} fade=${fade} L6=${l6} Δ=${relD}${wkStr})`;
       }).join(' · ');
       dbg(`◈ Qualifying diagnostics: ${diagLines}`, 'ok');
     }
@@ -3185,6 +3257,7 @@ function buildResult(live, pa, claudeRow) {
       { name: 'Risk parameters',   score: pa.scores.risk,        note: notes.risk        },
       { name: 'Entry/exit plan',   score: pa.scores.plan,        note: notes.plan        },
       { name: 'Rel. strength',     score: pa.scores.relStrength, note: notes.relStrength },
+      ...(notes.weeklyContext ? [{ name: 'Weekly gate',  score: null, note: notes.weeklyContext }] : []),
     ],
     entryNote: claudeRow.entryNote || '',
     exitNote:  claudeRow.exitNote  || '',
@@ -3537,13 +3610,16 @@ function renderResults(results) {
     // 5-layer bars
     let layerRows = '';
     (r.layers||[]).forEach(l => {
-      const s  = l.score||0;
-      const bc = s>=65?'bar-bull':s>=45?'bar-warn':'bar-bear';
-      const sc = s>=65?'var(--bull)':s>=45?'var(--warn)':'var(--bear)';
+      const s  = l.score != null ? l.score : null;
+      const bc = s!=null ? (s>=65?'bar-bull':s>=45?'bar-warn':'bar-bear') : '';
+      const sc = s!=null ? (s>=65?'var(--bull)':s>=45?'var(--warn)':'var(--bear)') : 'var(--muted)';
       layerRows += `<div class="layer-row">
         <span class="layer-name">${l.name}</span>
-        <div class="layer-bar-wrap"><div class="layer-bar ${bc}" data-w="${s}"></div></div>
-        <span class="layer-score-num" style="color:${sc}">${s}</span>
+        ${s != null
+          ? `<div class="layer-bar-wrap"><div class="layer-bar ${bc}" data-w="${s}"></div></div>
+             <span class="layer-score-num" style="color:${sc}">${s}</span>`
+          : `<div class="layer-bar-wrap"></div><span class="layer-score-num" style="color:var(--dim)">—</span>`
+        }
         <span class="layer-note-txt">${l.note||''}</span>
       </div>`;
     });
@@ -3570,6 +3646,9 @@ function renderResults(results) {
       ['Trend',    live.trend||'—'],
       ['Prior resist', live.priorResistance ? `$${live.priorResistance}` : '—'],
       ['Prior support', live.priorSupport ? `$${live.priorSupport}` : '—'],
+      ...(live.wRsi != null   ? [['W-RSI (14)',  `${live.wRsi}${live.wRsi>75?' ↑OB':live.wRsi<30?' ↓OS':''}`]] : []),
+      ...(live.wMa10 != null  ? [['10wk MA',     `$${fmt(live.wMa10)} ${live.price>live.wMa10?'↑':'↓'}`]] : []),
+      ...(live.wTrend != null ? [['W-Trend',     live.wTrend]] : []),
     ];
 
     const kvRows = arr => arr.filter(([,v])=>v&&v!=='—')
