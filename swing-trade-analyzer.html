@@ -646,11 +646,13 @@ canvas.spark-inline{display:block;width:120px;height:40px}
         </select>
       </div>
       <div class="param-group">
-        <label>Market regime</label>
+        <label>Market regime <span id="regimeAutoTag" style="font-size:9px;color:var(--accent);letter-spacing:.05em;margin-left:4px"></span></label>
         <select id="marketRegime">
-          <option value="bull">Bull / trending up</option>
-          <option value="neutral" selected>Neutral / mixed</option>
-          <option value="bear">Bear / risk-off</option>
+          <option value="RISK_ON">🟢 Risk On — trending up</option>
+          <option value="DIP_BUY" selected>🟡 Dip Buy — oversold bounce</option>
+          <option value="DISTRIBUTION">🟠 Distribution — fading rallies</option>
+          <option value="RISK_OFF">🔴 Risk Off — broad selloff</option>
+          <option value="neutral">⚪ Manual — mixed/neutral</option>
         </select>
       </div>
     </div>
@@ -3116,7 +3118,8 @@ async function runAnalysis() {
   const holdPeriod = document.getElementById('holdPeriod').value;
   const riskPct    = document.getElementById('riskPct').value;
   const minRR      = document.getElementById('minRR').value;
-  const regime     = document.getElementById('marketRegime').value;
+  // regime is now auto-detected by P5C classifyRegime() later in the run flow
+  // and set via applyRegime() which updates both the UI select and the regime variable
 
   // ── Token accumulator for this run ───────────────────────────────────────
   const runTokens = { input: 0, output: 0, batches: 0, failedBatches: 0 };
@@ -3347,6 +3350,31 @@ async function runAnalysis() {
       dbg(`◈ Rotation: ${window._rotationPromptStr}`, 'info');
     }
 
+    // P5C: Regime classifier — auto-detect from this run's signals
+    // Compute avg universe RSI from all non-ETF stocks
+    const universeRsis = stockData
+      .filter(s => !ETF_EXCLUSIONS.has(s.ticker) && s.rsi14 != null)
+      .map(s => s.rsi14);
+    const avgUniverseRsi = universeRsis.length
+      ? +(universeRsis.reduce((a, b) => a + b, 0) / universeRsis.length).toFixed(1)
+      : null;
+    // Avg intraday fade across stocks that have live session data
+    const liveFades = stockData.filter(s => s.intradayFade != null && s.isRegular).map(s => s.intradayFade);
+    const avgFade = liveFades.length
+      ? +(liveFades.reduce((a, b) => a + b, 0) / liveFades.length).toFixed(2)
+      : null;
+    const regimeResult = classifyRegime({
+      smhRsi:          window._smhRSI,
+      smhGap:          smhData?.gap ?? null,
+      avgUniverseRsi,
+      qualifierCount:  forClaude.length,
+      avgFade,
+      shortCount:      shortScored.length,
+    });
+    const autoRegime = applyRegime(regimeResult, window._smhRSI, avgUniverseRsi, forClaude.length);
+    // Override regime variable for Claude prompts
+    const regime = autoRegime;
+
     // Build JS-only results immediately — no API call needed
     jsOnly.forEach(({ s, pa }) => {
       allResults.push(buildResult(s, pa, { entryNote:'', exitNote:'', stopNote:'' }));
@@ -3569,11 +3597,13 @@ async function runAnalysis() {
 
       // P6A: Append this run to historical log
       logRunRecord({
-        smhRsi:        smhData?.rsi14 ?? null,
+        smhRsi:        window._smhRSI ?? null,
         smhGap:        smhData?.gap   ?? null,
+        regime:        autoRegime,           // P5C
+        avgUniverseRsi,                      // P5C breadth signal
         qualifiers:    forClaude.map(x => ({ ticker: x.s.ticker, score: x.pa.scores.overall, verdict: x.pa.verdict })),
         shorts:        shortScored.map(x => ({ ticker: x.s.ticker, score: x.pa.scores.overall, verdict: x.pa.verdict })),
-        sectorSnapshot,    // P5B: sector RSI snapshot for rotation tracking
+        sectorSnapshot,
         claudeSent,
         jsOnlyCount,
         cost:          runCost,
@@ -4316,6 +4346,9 @@ function renderResults(results) {
         <button class="dl-btn" onclick="exportRunLog()" title="Export run history log (all sessions)" style="color:var(--accent2);border-color:var(--accent2)">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg>History
         </button>
+        <button class="dl-btn" onclick="exportOutcomes()" title="Export trade outcomes (P&L log)" style="color:#0a7a5c;border-color:rgba(13,158,122,.4)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>Outcomes
+        </button>
       </div>
     </div>
     <div class="results-view active" id="rview-1">${view1}</div>
@@ -4751,6 +4784,60 @@ function removePosition(idx) {
   renderPositions();
 }
 
+// P6B: Close position with outcome capture
+// Shows a mini dialog to record exit price and reason, then logs outcome
+function closePositionWithOutcome(idx) {
+  const p = _positions[idx];
+  if (!p) return;
+
+  // Get live price as default exit price
+  const livePrice = _posLivePrices[p.ticker]?.price || p.entry;
+  const exitPriceInput = prompt(
+    `Close ${p.ticker}\n\nEntry: $${p.entry} | Stop: $${p.stop} | Target: $${p.target||'—'}\n\nExit price? (default: ${livePrice})`,
+    livePrice
+  );
+  if (exitPriceInput === null) return; // cancelled
+
+  const exitPrice = parseFloat(exitPriceInput) || livePrice;
+  const pnlPct = +((exitPrice - p.entry) / p.entry * 100).toFixed(2);
+  const isWin = pnlPct > 0;
+
+  const exitReasons = ['target hit', 'stop hit', 'exit signal', 'manual exit', 'earnings risk', 'trailing stop'];
+  const reason = prompt(
+    `Exit reason for ${p.ticker} (${pnlPct > 0 ? '+' : ''}${pnlPct}%):\n\n${exitReasons.map((r,i) => `${i+1}. ${r}`).join('\n')}\n\nEnter number or type reason:`,
+    isWin ? '1' : '2'
+  );
+  if (reason === null) return;
+
+  const reasonNum = parseInt(reason);
+  const exitReason = (!isNaN(reasonNum) && exitReasons[reasonNum - 1])
+    ? exitReasons[reasonNum - 1]
+    : reason;
+
+  // Log outcome
+  logOutcome({
+    ticker:     p.ticker,
+    entryDate:  p.entryDate || null,
+    exitDate:   new Date().toLocaleDateString('en-CA'),
+    entry:      p.entry,
+    exitPrice,
+    pnlPct,
+    isWin,
+    exitReason,
+    stop:       p.stop,
+    target:     p.target || null,
+    holdPeriod: p.holdPeriod || null,
+    regime:     p.regime || null,    // regime at time of entry if stored
+    notes:      p.notes || null,
+  });
+
+  // Remove from active positions
+  _positions.splice(idx, 1);
+  savePosData();
+  renderPositions();
+  dbg(`📋 Outcome logged: ${p.ticker} ${pnlPct > 0 ? '+' : ''}${pnlPct}% (${exitReason})`, 'ok');
+}
+
 // ── Live price fetch ──────────────────────────────────────────────────────────
 // Uses Polygon snapshot endpoint — same as main analysis, free, fast.
 async function fetchSinglePosPrice(ticker) {
@@ -4908,7 +4995,8 @@ function renderPositions() {
       </td>
       <td style="white-space:nowrap">
         <button class="pos-act-btn pos-act-edit" onclick="openPosForm(${idx})" title="Edit">✎</button>
-        <button class="pos-act-btn" onclick="removePosition(${idx})" title="Remove">✕</button>
+        <button class="pos-act-btn" onclick="closePositionWithOutcome(${idx})" title="Close with outcome" style="color:var(--accent);border-color:var(--accent)">Close</button>
+        <button class="pos-act-btn" onclick="removePosition(${idx})" title="Remove without logging">✕</button>
       </td>
     </tr>`;
   }).join('');
@@ -5604,7 +5692,7 @@ function exportRunLog() {
   if (!log.length) { alert('No run history yet. Run at least one analysis first.'); return; }
 
   const rows = [
-    ['Date', 'Time', 'SMH RSI', 'SMH Gap%', 'Qualifiers', 'Shorts', 'Claude Sent', 'Cost $', 'Tokens', 'Hold', 'Watchlist', 'Top Qualifier', 'Top Qualifier Score']
+    ['Date', 'Time', 'Regime', 'SMH RSI', 'SMH Gap%', 'Avg Universe RSI', 'Qualifiers', 'Shorts', 'Claude Sent', 'Cost $', 'Tokens', 'Hold', 'Watchlist', 'Top Qualifier', 'Top Qualifier Score']
   ];
 
   log.forEach(r => {
@@ -5612,8 +5700,10 @@ function exportRunLog() {
     rows.push([
       r.date,
       r.time,
+      r.regime ?? '',
       r.smhRsi ?? '',
       r.smhGap ?? '',
+      r.avgUniverseRsi ?? '',
       r.qualCount ?? '',
       r.shortCount ?? '',
       r.claudeSent ?? '',
@@ -5795,6 +5885,225 @@ function renderRotationPanel(rotations, priorAvailable) {
       ? `Δ = RSI change vs previous run. Green = money flowing in, red = rotating out.`
       : `Run again to see rotation vs prior session.`;
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P6B OUTCOME TRACKING
+// Records win/loss when closing positions via closePositionWithOutcome().
+// Running stats: win rate, avg win%, avg loss%, expectancy.
+// Prerequisite for P6C threshold optimization.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const OUTCOME_KEY    = 'swingedge_outcomes_v1';
+const OUTCOME_MAX    = 500;
+const OUTCOME_EXPIRE = 365; // days — keep outcomes for 1 year
+
+function loadOutcomes() {
+  try {
+    const raw = localStorage.getItem(OUTCOME_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch(e) { return []; }
+}
+
+function saveOutcomes(outcomes) {
+  try { localStorage.setItem(OUTCOME_KEY, JSON.stringify(outcomes)); } catch(e) {}
+}
+
+function logOutcome(data) {
+  try {
+    const outcomes = loadOutcomes();
+    const record = {
+      ts:         new Date().toISOString(),
+      ...data,
+    };
+    outcomes.unshift(record);
+
+    // Expire old records
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - OUTCOME_EXPIRE);
+    const trimmed = outcomes
+      .filter(r => new Date(r.ts) >= cutoff)
+      .slice(0, OUTCOME_MAX);
+
+    saveOutcomes(trimmed);
+  } catch(e) {}
+}
+
+// Compute running stats from outcome log
+function getOutcomeStats() {
+  const outcomes = loadOutcomes();
+  if (!outcomes.length) return null;
+
+  const wins   = outcomes.filter(o => o.isWin);
+  const losses = outcomes.filter(o => !o.isWin);
+
+  const winRate  = +(wins.length / outcomes.length * 100).toFixed(1);
+  const avgWin   = wins.length
+    ? +(wins.reduce((s, o) => s + o.pnlPct, 0) / wins.length).toFixed(2)
+    : 0;
+  const avgLoss  = losses.length
+    ? +(losses.reduce((s, o) => s + o.pnlPct, 0) / losses.length).toFixed(2)
+    : 0;
+  // Expectancy: (winRate/100 × avgWin) + ((1-winRate/100) × avgLoss)
+  const expectancy = +((winRate / 100 * avgWin) + ((1 - winRate / 100) * avgLoss)).toFixed(2);
+
+  // By exit reason
+  const byReason = {};
+  outcomes.forEach(o => {
+    const r = o.exitReason || 'unknown';
+    if (!byReason[r]) byReason[r] = { count: 0, wins: 0, pnlSum: 0 };
+    byReason[r].count++;
+    if (o.isWin) byReason[r].wins++;
+    byReason[r].pnlSum += o.pnlPct;
+  });
+
+  return {
+    total: outcomes.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate,
+    avgWin,
+    avgLoss,
+    expectancy,
+    byReason,
+    recentOutcomes: outcomes.slice(0, 10), // last 10 for display
+  };
+}
+
+// Export outcomes as CSV
+function exportOutcomes() {
+  const outcomes = loadOutcomes();
+  if (!outcomes.length) { alert('No outcome history yet. Close a position with the Close button to start tracking.'); return; }
+
+  const rows = [
+    ['Date', 'Ticker', 'Entry', 'Exit Price', 'P&L %', 'Win/Loss', 'Exit Reason', 'Stop', 'Target', 'Hold Period', 'Regime', 'Notes']
+  ];
+  outcomes.forEach(o => {
+    rows.push([
+      o.exitDate || o.ts?.slice(0, 10) || '',
+      o.ticker || '',
+      o.entry || '',
+      o.exitPrice || '',
+      o.pnlPct || '',
+      o.isWin ? 'WIN' : 'LOSS',
+      o.exitReason || '',
+      o.stop || '',
+      o.target || '',
+      o.holdPeriod || '',
+      o.regime || '',
+      o.notes || '',
+    ]);
+  });
+
+  const csv  = rows.map(r => r.map(v => `"${v}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `swingedge_outcomes_${new Date().toLocaleDateString('en-CA')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  dbg(`📋 Exported ${outcomes.length} outcome records`, 'ok');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P5C REGIME CLASSIFIER
+// Auto-detects market regime from signals already computed each run.
+// No new API calls. Updates the marketRegime select automatically.
+// Regime is injected into Claude prompts via the existing Regime= parameter.
+//
+// 4 regimes:
+//   RISK_ON     — trending up, broad participation, buy dips
+//   DIP_BUY     — pulled back, RSI healthy, qualifiers present = buy the dip
+//   DISTRIBUTION — rallies fading, distribution, reduce longs
+//   RISK_OFF    — broad selloff, oversold, avoid new longs
+// ═══════════════════════════════════════════════════════════════════════════
+
+function classifyRegime({ smhRsi, smhGap, avgUniverseRsi, qualifierCount, avgFade, shortCount }) {
+  // Each regime accumulates signal votes. Most votes wins.
+  const scores = { RISK_ON: 0, DIP_BUY: 0, DISTRIBUTION: 0, RISK_OFF: 0 };
+
+  // ── SMH RSI ──────────────────────────────────────────────────────────────
+  if (smhRsi != null) {
+    if      (smhRsi >= 65)              { scores.RISK_ON     += 3; }
+    else if (smhRsi >= 55)              { scores.DIP_BUY     += 2; scores.RISK_ON += 1; }
+    else if (smhRsi >= 45)              { scores.DIP_BUY     += 2; scores.DISTRIBUTION += 1; }
+    else if (smhRsi >= 35)              { scores.RISK_OFF    += 2; scores.DISTRIBUTION += 1; }
+    else                                { scores.RISK_OFF    += 3; }
+  }
+
+  // ── SMH gap (today's opening direction) ───────────────────────────────────
+  if (smhGap != null) {
+    if      (smhGap >=  1.5)            { scores.RISK_ON     += 2; }
+    else if (smhGap >=  0.3)            { scores.RISK_ON     += 1; scores.DIP_BUY += 1; }
+    else if (smhGap >= -0.3)            { scores.DIP_BUY     += 1; }
+    else if (smhGap >= -1.5)            { scores.DISTRIBUTION+= 1; scores.DIP_BUY += 1; }
+    else                                { scores.RISK_OFF    += 2; scores.DISTRIBUTION += 1; }
+  }
+
+  // ── Average universe RSI (breadth signal) ─────────────────────────────────
+  if (avgUniverseRsi != null) {
+    if      (avgUniverseRsi >= 60)      { scores.RISK_ON     += 2; }
+    else if (avgUniverseRsi >= 53)      { scores.RISK_ON     += 1; scores.DIP_BUY += 1; }
+    else if (avgUniverseRsi >= 47)      { scores.DIP_BUY     += 2; }
+    else if (avgUniverseRsi >= 40)      { scores.DISTRIBUTION+= 1; scores.RISK_OFF += 1; }
+    else                                { scores.RISK_OFF    += 2; }
+  }
+
+  // ── Qualifier count (scoring engine conviction) ────────────────────────────
+  if (qualifierCount != null) {
+    if      (qualifierCount >= 8)       { scores.RISK_ON     += 2; }
+    else if (qualifierCount >= 4)       { scores.DIP_BUY     += 2; }
+    else if (qualifierCount >= 1)       { scores.DIP_BUY     += 1; scores.DISTRIBUTION += 1; }
+    else                                { scores.DISTRIBUTION+= 1; scores.RISK_OFF += 1; }
+  }
+
+  // ── Average intraday fade (distribution signal) ───────────────────────────
+  // Only meaningful during regular session (avgFade > 0 means intraday data available)
+  if (avgFade != null && avgFade > 0) {
+    if      (avgFade >= 1.5)            { scores.DISTRIBUTION+= 3; } // most stocks fading
+    else if (avgFade >= 0.8)            { scores.DISTRIBUTION+= 2; }
+    else if (avgFade >= 0.4)            { scores.DIP_BUY     += 1; scores.DISTRIBUTION += 1; }
+    else                                { scores.RISK_ON     += 1; } // holding gains
+  }
+
+  // ── Short candidates (overbought distribution signal) ─────────────────────
+  if (shortCount != null) {
+    if      (shortCount >= 3)           { scores.DISTRIBUTION+= 2; }
+    else if (shortCount >= 1)           { scores.DISTRIBUTION+= 1; }
+  }
+
+  // Pick highest scoring regime
+  const winner = Object.entries(scores).sort((a, b) => b[1] - a[1])[0][0];
+  const total  = Object.values(scores).reduce((s, v) => s + v, 0);
+  const confidence = total > 0 ? Math.round(scores[winner] / total * 100) : 0;
+
+  return { regime: winner, scores, confidence };
+}
+
+// Apply detected regime to the UI select and log it
+function applyRegime(result, smhRsi, avgUniverseRsi, qualCount) {
+  const { regime, confidence } = result;
+  const sel = document.getElementById('marketRegime');
+  const tag = document.getElementById('regimeAutoTag');
+
+  if (sel) {
+    // Only auto-update if the option exists in the select
+    const opt = [...sel.options].find(o => o.value === regime);
+    if (opt) sel.value = regime;
+  }
+  if (tag) {
+    tag.textContent = `auto`;
+    tag.title = `Auto-detected: ${regime} (${confidence}% confidence)`;
+  }
+
+  const label = {
+    RISK_ON: '🟢 Risk On', DIP_BUY: '🟡 Dip Buy',
+    DISTRIBUTION: '🟠 Distribution', RISK_OFF: '🔴 Risk Off'
+  }[regime] || regime;
+
+  dbg(`◈ Regime: ${label} (${confidence}% conf · SMH RSI=${smhRsi??'?'} · avg universe RSI=${avgUniverseRsi??'?'} · ${qualCount} qualifier${qualCount !== 1 ? 's' : ''})`, 'info');
+  return regime;
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
