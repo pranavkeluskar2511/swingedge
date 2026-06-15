@@ -479,11 +479,28 @@ canvas.spark-inline{display:block;width:120px;height:40px}
           <label>Entry date</label>
           <input id="pfDate" class="pos-form-date" type="date">
         </div>
+        <!-- P6B entry context — auto-filled from last run, editable -->
+        <div class="pos-form-group" title="Market regime at entry — auto-filled from last run">
+          <label>Regime <span style="font-weight:400;opacity:.6;font-size:8px">auto</span></label>
+          <select id="pfRegime" style="background:var(--bg);border:1px solid var(--border2);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:11px;padding:5px 6px;width:130px">
+            <option value="">— unknown —</option>
+            <option value="RISK_ON">🟢 Risk On</option>
+            <option value="DIP_BUY">🟡 Dip Buy</option>
+            <option value="DISTRIBUTION">🟠 Distribution</option>
+            <option value="RISK_OFF">🔴 Risk Off</option>
+          </select>
+        </div>
+        <div class="pos-form-group" title="SwingEdge score at entry (0–100)">
+          <label>Score <span style="font-weight:400;opacity:.6;font-size:8px">auto</span></label>
+          <input id="pfScore" style="width:55px;background:var(--bg);border:1px solid var(--border2);border-radius:5px;color:var(--text);font-family:var(--mono);font-size:12px;padding:5px 8px" placeholder="—" type="number" min="0" max="100">
+        </div>
         <div class="pos-form-group">
           <label>Notes <span style="font-weight:400;opacity:.6">(opt)</span></label>
           <input id="pfNotes" class="pos-form-notes" placeholder="e.g. breakout from flat base">
         </div>
         <input type="hidden" id="pfEditIdx" value="">
+        <input type="hidden" id="pfSmhRsi" value="">
+        <input type="hidden" id="pfAvgUniRsi" value="">
         <button class="pos-form-save" onclick="savePosition()">Save</button>
         <button class="pos-form-cancel" onclick="closePosForm()">Cancel</button>
       </div>
@@ -3372,6 +3389,9 @@ async function runAnalysis() {
       shortCount:      shortScored.length,
     });
     const autoRegime = applyRegime(regimeResult, window._smhRSI, avgUniverseRsi, forClaude.length);
+    // Store for position form auto-population (P6B entry tagging)
+    window._lastRunRegime   = autoRegime;
+    window._lastAvgUniRsi   = avgUniverseRsi;
     // Override regime variable for Claude prompts
     const regime = autoRegime;
 
@@ -4724,6 +4744,11 @@ function openPosForm(editIdx) {
     document.getElementById('pfDate').value    = p.date   || todayStr;
     document.getElementById('pfNotes').value   = p.notes  || '';
     document.getElementById('pfEditIdx').value = editIdx;
+    // Restore stored context fields for editing
+    document.getElementById('pfRegime').value  = p.entryRegime  || '';
+    document.getElementById('pfScore').value   = p.entryScore   || '';
+    document.getElementById('pfSmhRsi').value  = p.entrySmhRsi  || '';
+    document.getElementById('pfAvgUniRsi').value = p.entryAvgUniRsi || '';
   } else {
     document.getElementById('pfTicker').value  = '';
     document.getElementById('pfEntry').value   = '';
@@ -4732,6 +4757,15 @@ function openPosForm(editIdx) {
     document.getElementById('pfDate').value    = todayStr;
     document.getElementById('pfNotes').value   = '';
     document.getElementById('pfEditIdx').value = '';
+
+    // P6B: Auto-populate entry context from most recent run data
+    // window._lastRunRegime, window._smhRSI, window._lastAvgUniRsi set by P5C
+    const autoRegime = window._lastRunRegime || document.getElementById('marketRegime')?.value || '';
+    document.getElementById('pfRegime').value    = autoRegime;
+    document.getElementById('pfScore').value     = ''; // user fills manually or from card
+    document.getElementById('pfSmhRsi').value    = window._smhRSI   != null ? window._smhRSI   : '';
+    document.getElementById('pfAvgUniRsi').value = window._lastAvgUniRsi != null ? window._lastAvgUniRsi : '';
+
     setTimeout(() => document.getElementById('pfTicker').focus(), 50);
   }
 
@@ -4749,20 +4783,31 @@ function closePosForm() {
 }
 
 function savePosition() {
-  const ticker = (document.getElementById('pfTicker').value || '').trim().toUpperCase().replace(/[^A-Z]/g,'');
-  const entry  = parseFloat(document.getElementById('pfEntry').value);
-  const stop   = parseFloat(document.getElementById('pfStop').value);
-  const target = parseFloat(document.getElementById('pfTarget').value) || null;
-  const date   = document.getElementById('pfDate').value || '';
-  const notes  = (document.getElementById('pfNotes').value || '').trim();
+  const ticker  = (document.getElementById('pfTicker').value || '').trim().toUpperCase().replace(/[^A-Z]/g,'');
+  const entry   = parseFloat(document.getElementById('pfEntry').value);
+  const stop    = parseFloat(document.getElementById('pfStop').value);
+  const target  = parseFloat(document.getElementById('pfTarget').value) || null;
+  const date    = document.getElementById('pfDate').value || '';
+  const notes   = (document.getElementById('pfNotes').value || '').trim();
   const editIdx = document.getElementById('pfEditIdx').value;
+
+  // P6B: Entry context fields
+  const entryRegime    = document.getElementById('pfRegime').value || null;
+  const entryScore     = parseInt(document.getElementById('pfScore').value) || null;
+  const entrySmhRsi    = parseFloat(document.getElementById('pfSmhRsi').value) || null;
+  const entryAvgUniRsi = parseFloat(document.getElementById('pfAvgUniRsi').value) || null;
+  const entryDate      = date; // alias for outcome log
 
   if (!ticker || !ticker.length) { alert('Enter a ticker.'); return; }
   if (!entry  || isNaN(entry))   { alert('Enter a valid entry price.'); return; }
   if (!stop   || isNaN(stop))    { alert('Enter a valid stop price.'); return; }
   if (stop >= entry) { alert('Stop price must be below entry price.'); return; }
 
-  const pos = { ticker, entry, stop, target, date, notes };
+  const pos = {
+    ticker, entry, stop, target, date, notes,
+    // P6B: entry context for outcome tracking and P6C calibration
+    entryRegime, entryScore, entrySmhRsi, entryAvgUniRsi, entryDate,
+  };
 
   if (editIdx !== '') {
     _positions[parseInt(editIdx)] = pos;
@@ -4816,19 +4861,23 @@ function closePositionWithOutcome(idx) {
 
   // Log outcome
   logOutcome({
-    ticker:     p.ticker,
-    entryDate:  p.entryDate || null,
-    exitDate:   new Date().toLocaleDateString('en-CA'),
-    entry:      p.entry,
+    ticker:          p.ticker,
+    entryDate:       p.entryDate || p.date || null,
+    exitDate:        new Date().toLocaleDateString('en-CA'),
+    entry:           p.entry,
     exitPrice,
     pnlPct,
     isWin,
     exitReason,
-    stop:       p.stop,
-    target:     p.target || null,
-    holdPeriod: p.holdPeriod || null,
-    regime:     p.regime || null,    // regime at time of entry if stored
-    notes:      p.notes || null,
+    stop:            p.stop,
+    target:          p.target || null,
+    holdPeriod:      p.holdPeriod || null,
+    // P6B entry context — key for P6C calibration
+    entryRegime:     p.entryRegime     || null,
+    entryScore:      p.entryScore      || null,
+    entrySmhRsi:     p.entrySmhRsi     || null,
+    entryAvgUniRsi:  p.entryAvgUniRsi  || null,
+    notes:           p.notes || null,
   });
 
   // Remove from active positions
@@ -4969,6 +5018,7 @@ function renderPositions() {
       <td>
         <div class="pos-ticker-cell">${p.ticker}</div>
         <div style="font-size:9px;color:var(--dim);margin-top:1px;letter-spacing:.03em">${getSector(p.ticker)}</div>
+        ${p.entryRegime ? `<div style="font-size:8px;margin-top:2px;letter-spacing:.04em;color:var(--muted)">${{'RISK_ON':'🟢','DIP_BUY':'🟡','DISTRIBUTION':'🟠','RISK_OFF':'🔴'}[p.entryRegime]||''} ${p.entryRegime}${p.entryScore ? ` · score ${p.entryScore}` : ''}</div>` : ''}
         ${p.notes ? `<div class="pos-notes" title="${p.notes}">${p.notes}</div>` : ''}
         ${daysStr ? `<div class="pos-days">${daysStr}</div>` : ''}
       </td>
@@ -5976,7 +6026,7 @@ function exportOutcomes() {
   if (!outcomes.length) { alert('No outcome history yet. Close a position with the Close button to start tracking.'); return; }
 
   const rows = [
-    ['Date', 'Ticker', 'Entry', 'Exit Price', 'P&L %', 'Win/Loss', 'Exit Reason', 'Stop', 'Target', 'Hold Period', 'Regime', 'Notes']
+    ['Date', 'Ticker', 'Entry', 'Exit Price', 'P&L %', 'Win/Loss', 'Exit Reason', 'Stop', 'Target', 'Entry Regime', 'Entry Score', 'Entry SMH RSI', 'Entry Avg RSI', 'Notes']
   ];
   outcomes.forEach(o => {
     rows.push([
@@ -5989,8 +6039,10 @@ function exportOutcomes() {
       o.exitReason || '',
       o.stop || '',
       o.target || '',
-      o.holdPeriod || '',
-      o.regime || '',
+      o.entryRegime || '',
+      o.entryScore || '',
+      o.entrySmhRsi || '',
+      o.entryAvgUniRsi || '',
       o.notes || '',
     ]);
   });
