@@ -1724,6 +1724,23 @@ async function detectProxy() {
   }
 }
 
+// P7: shared fetch timeout — actually aborts the in-flight request via
+// AbortController (not just abandons it), so a hung connection on Render's
+// proxy or Polygon's API gets cancelled rather than left running. 15s is
+// generous vs the normal ~0.5-2s ticker fetch; stalls observed in practice
+// have run from 2 minutes to 26+ minutes with no cancellation previously.
+const FETCH_TIMEOUT_MS = 15000;
+
+async function fetchWithTimeout(url, opts = {}, ms = FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function polyGet(path) {
   const sep = path.includes('?') ? '&' : '?';
   // Polygon: use proxy if available (mobile needs it for CORS), else direct
@@ -1732,8 +1749,11 @@ async function polyGet(path) {
     : `https://api.polygon.io${path}${sep}apiKey=${POLY_KEY}`;
   let r;
   try {
-    r = await fetch(url, { mode: 'cors' });
-  } catch(e) { throw new Error(`Polygon network error: ${e.message}`); }
+    r = await fetchWithTimeout(url, { mode: 'cors' });
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error(`Polygon fetch timed out after ${FETCH_TIMEOUT_MS/1000}s`);
+    throw new Error(`Polygon network error: ${e.message}`);
+  }
   if (!r.ok) {
     let body = ''; try { body = await r.text(); } catch(_) {}
     throw new Error(`Polygon HTTP ${r.status} — ${body.slice(0,120)}`);
@@ -1750,13 +1770,31 @@ async function polyGetDirect(path) {
   const url = `https://api.polygon.io${path}${sep}apiKey=${POLY_KEY}`;
   let r;
   try {
-    r = await fetch(url, { mode: 'cors' });
-  } catch(e) { throw new Error(`Polygon direct network error: ${e.message}`); }
+    r = await fetchWithTimeout(url, { mode: 'cors' });
+  } catch(e) {
+    if (e.name === 'AbortError') throw new Error(`Polygon direct fetch timed out after ${FETCH_TIMEOUT_MS/1000}s`);
+    throw new Error(`Polygon direct network error: ${e.message}`);
+  }
   if (!r.ok) {
     let body = ''; try { body = await r.text(); } catch(_) {}
     throw new Error(`Polygon direct HTTP ${r.status} — ${body.slice(0,120)}`);
   }
   return r.json();
+}
+
+// P7: Per-ticker fetch timeout — prevents a single stalled ticker from blocking
+// an entire run. Wraps any promise; rejects with a clear timeout error if it
+// doesn't resolve within `ms`. Used around fetchTickerData() and fetchStockNews()
+// per ticker so a hung Polygon/proxy call (seen up to 26+ min in practice) gets
+// skipped instead of stalling the whole batch.
+const TICKER_FETCH_TIMEOUT_MS = 15000; // 15s — generous vs normal ~0.5-2s ticker fetch
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out after ${Math.round(ms/1000)}s${label ? ` (${label})` : ''}`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 // ── Polygon news fetch — per qualifying stock ─────────────────────────────────
@@ -1796,7 +1834,14 @@ async function fetchAllNews(tickers) {
     while (queue.length > 0) {
       const ticker = queue.shift();
       if (!ticker) continue;
-      const result = await fetchStockNews(ticker);
+      // P7: same timeout protection as price fetch — news is non-fatal but
+      // shouldn't be allowed to stall the run either.
+      let result;
+      try {
+        result = await withTimeout(fetchStockNews(ticker), TICKER_FETCH_TIMEOUT_MS, ticker);
+      } catch(e) {
+        result = { ticker, lines: [], count: 0, error: e.message };
+      }
       newsMap.set(result.ticker, result.lines);
     }
   });
@@ -3953,22 +3998,26 @@ function showCostStrip(tokens, cost, analyzed, total, claudeSent, jsOnly) {
 async function fetchAllParallel(tickerList, concurrency) {
   const results = new Array(tickerList.length);
   let idx = 0;
+  let timeoutCount = 0;
+  const timedOutTickers = [];
 
   async function worker() {
     while (idx < tickerList.length) {
       const i = idx++;
       const ticker = tickerList[i];
       try {
-        const data = await fetchTickerData(ticker);
+        const data = await withTimeout(fetchTickerData(ticker), TICKER_FETCH_TIMEOUT_MS, ticker);
         results[i] = data;
         const fadeDbg = (data.intradayFade !== null && data.gapPct !== null && data.gapPct >= 1)
           ? `, fade=${Math.round(data.intradayFade*100)}%` : '';
         dbg(`✓ ${ticker}: $${data.price} (${data.priceSource})${data.gapPct !== null ? ` gap ${data.gapPct >= 0 ? '+' : ''}${data.gapPct}%` : ''}, RSI=${data.rsi14}, ATR=${data.atr14}${fadeDbg}`, 'ok');
       } catch(e) {
-        dbg(`✗ ${ticker}: ${e.message}`, 'error');
+        const isTimeout = /^Timed out after/.test(e.message);
+        if (isTimeout) { timeoutCount++; timedOutTickers.push(ticker); }
+        dbg(`✗ ${ticker}: ${e.message}${isTimeout ? ' — skipped, run continuing' : ''}`, 'error');
         results[i] = {
           ticker, companyName: ticker, price: 0, prevClose: 0,
-          changePct: null, priceSource: 'unavailable', priceIsLive: false, priceIsClose: false,
+          changePct: null, priceSource: isTimeout ? 'timeout' : 'unavailable', priceIsLive: false, priceIsClose: false,
           volume: 0, avgVol20: null, volRatio: null,
           rsi14: null, macd: null, ma20: null, ma50: null, ma200: null, atr14: null,
           trend: 'unknown', closes: [], sparkBars: [], rawBars: [],
@@ -3980,6 +4029,13 @@ async function fetchAllParallel(tickerList, concurrency) {
 
   // Run N workers in parallel
   await Promise.all(Array.from({length: concurrency}, worker));
+
+  // P7: Surface a summary if any tickers timed out — visible signal that the
+  // run completed despite stalls, rather than silently degrading.
+  if (timeoutCount > 0) {
+    dbg(`⏱ ${timeoutCount} ticker${timeoutCount > 1 ? 's' : ''} timed out after ${TICKER_FETCH_TIMEOUT_MS/1000}s and ${timeoutCount > 1 ? 'were' : 'was'} skipped: ${timedOutTickers.join(', ')}`, 'info');
+  }
+
   return results;
 }
 
