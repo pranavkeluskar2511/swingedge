@@ -84,6 +84,7 @@ header{display:flex;align-items:flex-end;justify-content:space-between;margin-bo
 .analyze-btn:hover{background:#0bb88e;transform:translateY(-1px);box-shadow:0 4px 16px rgba(13,158,122,.25)}
 .analyze-btn:active{transform:translateY(0)}
 .analyze-btn:disabled{background:var(--dim);color:#fff;cursor:not-allowed;transform:none;box-shadow:none}
+#prewarmBtn:disabled{background:var(--surface2);color:var(--dim);border-color:var(--border)}
 
 /* Excel upload button */
 #xlUploadLabel{cursor:pointer;align-self:flex-end}
@@ -619,6 +620,9 @@ canvas.spark-inline{display:block;width:120px;height:40px}
 
       <button class="analyze-btn" id="analyzeBtn" onclick="runAnalysis()">Analyze ↗</button>
       <button class="analyze-btn" id="analyzeAllBtn" onclick="runAllWatchlists()" style="background:var(--accent2)">⊕ Run All Watchlists</button>
+      <button class="analyze-btn" id="prewarmBtn" onclick="prewarmProxy()" title="Ping the Render server now so it's awake before you run — avoids cold-start delays" style="background:transparent;border:1px solid var(--border2);color:var(--muted)">
+        <span id="prewarmIcon">☁</span> <span id="prewarmLabel">Pre-warm server</span>
+      </button>
     </div>
 
     <!-- Upload status -->
@@ -1700,14 +1704,19 @@ let IS_CLOUD = false;         // true when running on Render
 
 async function detectProxy() {
   try {
+    const t0 = Date.now();
     const r = await fetch('/health', { cache: 'no-store' });
+    const elapsed = Date.now() - t0;
     if (r.ok) {
       const j = await r.json();
       if (j.ok) {
         USE_LOCAL_PROXY = true;
         IS_CLOUD = !!j.cloud;
         const platform = j.platform === 'render' ? '☁ Render' : j.cloud ? '☁ Cloud' : '⚙ Local server';
-        dbg(`✓ Proxy active (${platform}) — Polygon via proxy, Anthropic direct`, 'ok');
+        // P7b: flag if this health check itself was slow — early warning that
+        // Render may be cold and the upcoming run could hit fetch delays.
+        const coldStartNote = elapsed > 3000 ? ` (${(elapsed/1000).toFixed(1)}s — was cold, now warm)` : '';
+        dbg(`✓ Proxy active (${platform}) — Polygon via proxy, Anthropic direct${coldStartNote}`, 'ok');
         const el = document.getElementById('lastUpdated');
         if (el) el.textContent = `${platform} — ready`;
         document.getElementById('fileBanner').style.display = 'none';
@@ -1721,6 +1730,63 @@ async function detectProxy() {
     dbg('ℹ No proxy — direct API calls (works on desktop Chrome/Edge).');
   } else {
     dbg('ℹ No proxy — direct API calls.');
+  }
+}
+
+// P7b: Manual pre-warm — pings /health on demand so the person can wake
+// Render up *before* committing to a full run, rather than eating the
+// cold-start penalty on the first few ticker fetches of the run itself.
+// Render free-tier idles after inactivity; a cold proxy has caused fetch
+// stalls ranging from 2 minutes to 26+ minutes in practice (see P7).
+let _prewarmInFlight = false;
+
+async function prewarmProxy() {
+  if (_prewarmInFlight) return;
+  if (IS_FILE) {
+    dbg('ℹ Pre-warm skipped — running from a local file, no server to warm.', 'info');
+    return;
+  }
+  _prewarmInFlight = true;
+  const btn   = document.getElementById('prewarmBtn');
+  const icon  = document.getElementById('prewarmIcon');
+  const label = document.getElementById('prewarmLabel');
+  if (btn)   btn.disabled = true;
+  if (icon)  icon.textContent = '⏳';
+  if (label) label.textContent = 'Warming up…';
+
+  const t0 = Date.now();
+  dbg('☁ Pre-warming server — pinging /health…', 'info');
+
+  try {
+    const r = await fetch('/health', { cache: 'no-store' });
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    if (r.ok) {
+      const j = await r.json();
+      if (j.ok) {
+        USE_LOCAL_PROXY = true;
+        IS_CLOUD = !!j.cloud;
+        const wasSlow = (Date.now() - t0) > 3000;
+        dbg(`✓ Server is awake (${elapsed}s)${wasSlow ? ' — was cold, now warm and ready' : ' — already warm'}`, 'ok');
+        if (icon)  icon.textContent = '✓';
+        if (label) label.textContent = wasSlow ? 'Warmed up — ready' : 'Already warm';
+      } else {
+        throw new Error('Health check returned not-ok');
+      }
+    } else {
+      throw new Error(`HTTP ${r.status}`);
+    }
+  } catch(e) {
+    dbg(`✗ Pre-warm failed: ${e.message} — server may still be cold`, 'error');
+    if (icon)  icon.textContent = '⚠';
+    if (label) label.textContent = 'Pre-warm failed — try again';
+  } finally {
+    _prewarmInFlight = false;
+    if (btn) btn.disabled = false;
+    // Reset button label after a few seconds so it's ready for next use
+    setTimeout(() => {
+      if (icon)  icon.textContent = '☁';
+      if (label) label.textContent = 'Pre-warm server';
+    }, 6000);
   }
 }
 
